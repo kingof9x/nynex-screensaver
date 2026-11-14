@@ -70,8 +70,9 @@ cargo build --release          # target/release/nynex.exe; rename to nynex.scr
 Cross-compiling from Linux works with `rustup target add x86_64-pc-windows-gnu` and MinGW
 (`cargo build --release --target x86_64-pc-windows-gnu`).
 
-GitHub Actions builds every push and pull request. Pushing a tag such as `v0.1.0` publishes a
-release with `nynex.scr` and a zip:
+GitHub Actions builds every push and pull request. To publish a release with `nynex.scr` and a zip,
+open **Actions → Build and release → Run workflow**, type a version such as `v0.1.0` and click
+**Run workflow**. Pushing a tag does the same:
 
 ```
 git tag v0.1.0 && git push origin v0.1.0
