@@ -4,7 +4,8 @@
 //!   /s           run full screen
 //!   /p <hwnd>    draw inside the little preview box of Screen Saver Settings
 //!   /c[:<hwnd>]  open the settings
-//! With no arguments (double-clicking the file) it opens the settings too.
+//! With no arguments (double-clicking nynex.exe) it opens the nynex app, which is where
+//! everything is set up: landscapes, look, playing it, and making it the screensaver.
 //!
 //! Extra options for trying it out:
 //!   --window                       run in a normal window
@@ -22,6 +23,17 @@ mod scene;
 mod settings;
 
 fn main() {
+    // A GUI program has no console, so write crashes to a log the user can send us.
+    std::panic::set_hook(Box::new(|info| {
+        let dir = config::app_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let msg = format!("{:?} {info}\n", std::time::SystemTime::now());
+        let _ = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("crash.log")).and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(msg.as_bytes())
+        });
+        eprintln!("{msg}");
+    }));
     let args: Vec<String> = std::env::args().skip(1).collect();
     let first = args.first().map(|s| s.to_ascii_lowercase()).unwrap_or_default();
     // Windows may pass "/p 1234", "/p:1234", "-p 1234" and so on.
