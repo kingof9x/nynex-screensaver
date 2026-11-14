@@ -1,0 +1,62 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Smoke test (render one frame with no window)
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $bmp = New-Object System.Drawing.Bitmap 320, 180
+          for ($y = 0; $y -lt 180; $y++) { for ($x = 0; $x -lt 320; $x++) {
+            if ($y -lt 90) { $c = [System.Drawing.Color]::FromArgb(90, 140, 220) } else { $c = [System.Drawing.Color]::FromArgb(60, 140, 50) }
+            $bmp.SetPixel($x, $y, $c) } }
+          $bmp.Save("$PWD\test.png", [System.Drawing.Imaging.ImageFormat]::Png)
+          $p = Start-Process -FilePath target\release\nynex.exe -ArgumentList "--render","test.png","frame.png","--size","640x360" -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0 -or -not (Test-Path frame.png)) { throw "render failed" }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\nynex.exe dist\nynex.scr
+          Copy-Item README.md dist\README.md
+          Compress-Archive -Path dist\* -DestinationPath nynex-screensaver-windows-x64.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nynex-screensaver-windows-x64
+          path: |
+            dist/nynex.scr
+            dist/README.md
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            nynex-screensaver-windows-x64.zip dist/nynex.scr \
+            --title "nynex screensaver $GITHUB_REF_NAME" \
+            --generate-notes

@@ -1,0 +1,410 @@
+//! Settings app (opened by Windows' "Settings" button, or by running the .scr directly):
+//! manage the landscape list, timing, transitions, the look sliders and the logo, with a
+//! live preview of the result.
+
+use crate::config::{import_image, Config, TransitionKind, IMAGE_EXTENSIONS};
+use crate::player::Player;
+use crate::scene::pixel_size;
+use eframe::egui;
+use std::time::{Duration, Instant};
+
+const PW: usize = 960;
+const PH: usize = 540;
+
+pub fn run() -> eframe::Result<()> {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("nynex screensaver settings")
+            .with_inner_size([1440.0, 880.0])
+            .with_min_inner_size([900.0, 600.0]),
+        ..Default::default()
+    };
+    eframe::run_native("nynex screensaver settings", options, Box::new(|_cc| Ok(Box::new(SettingsApp::new()))))
+}
+
+struct SettingsApp {
+    cfg: Config,
+    saved: String,
+    selected: Option<usize>,
+    preview: Option<Player>,
+    preview_key: String,
+    dirty_since: Option<Instant>,
+    frame: Vec<u32>,
+    tex: Option<egui::TextureHandle>,
+    last: Instant,
+    status: String,
+}
+
+impl SettingsApp {
+    fn new() -> Self {
+        let cfg = Config::load();
+        let saved = serde_json::to_string(&cfg).unwrap_or_default();
+        SettingsApp {
+            selected: if cfg.landscapes.is_empty() { None } else { Some(0) },
+            cfg,
+            saved,
+            preview: None,
+            preview_key: String::new(),
+            dirty_since: None,
+            frame: vec![0; PW * PH],
+            tex: None,
+            last: Instant::now(),
+            status: String::new(),
+        }
+    }
+
+    fn unsaved(&self) -> bool {
+        serde_json::to_string(&self.cfg).unwrap_or_default() != self.saved
+    }
+
+    fn save(&mut self) {
+        match self.cfg.save() {
+            Ok(()) => {
+                self.saved = serde_json::to_string(&self.cfg).unwrap_or_default();
+                self.status = "Saved.".into();
+            }
+            Err(e) => self.status = format!("Could not save: {e}"),
+        }
+    }
+
+    fn add_files(&mut self, files: Vec<std::path::PathBuf>) {
+        let mut added = 0;
+        for f in files {
+            let ok = f.extension().map(|e| IMAGE_EXTENSIONS.contains(&e.to_string_lossy().to_lowercase().as_str())).unwrap_or(false);
+            if !ok {
+                continue;
+            }
+            match import_image(&f) {
+                Ok(p) => {
+                    self.cfg.landscapes.push(crate::config::Landscape { path: p, enabled: true, duration: None });
+                    added += 1;
+                }
+                Err(e) => self.status = format!("Could not copy {}: {e}", f.display()),
+            }
+        }
+        if added > 0 {
+            self.selected = Some(self.cfg.landscapes.len() - 1);
+            self.status = format!("Added {added} landscape{}.", if added == 1 { "" } else { "s" });
+        }
+    }
+
+    /// Index of the selected landscape among the enabled ones (what the preview plays).
+    fn selected_in_enabled(&self) -> Option<usize> {
+        let sel = self.selected?;
+        let l = self.cfg.landscapes.get(sel)?;
+        if !l.enabled {
+            return None;
+        }
+        Some(self.cfg.landscapes[..sel].iter().filter(|l| l.enabled && l.path.exists()).count())
+    }
+
+    fn refresh_preview(&mut self) {
+        // rebuild the preview shortly after the settings stop changing
+        let key = serde_json::to_string(&(&self.cfg.landscapes, &self.cfg.look, &self.cfg.logo, self.cfg.shuffle)).unwrap_or_default();
+        if key != self.preview_key {
+            self.preview_key = key;
+            self.dirty_since = Some(Instant::now());
+        }
+        if let Some(t) = self.dirty_since {
+            if t.elapsed() > Duration::from_millis(180) || self.preview.is_none() {
+                self.dirty_since = None;
+                let mut cfg = self.cfg.clone();
+                cfg.shuffle = false;
+                let mut p = Player::new(cfg, PW, PH, 0, 1);
+                if let Some(i) = self.selected_in_enabled() {
+                    p.jump_to(i);
+                }
+                self.preview = Some(p);
+            }
+        }
+        if let Some(p) = &mut self.preview {
+            // timing and transition changes apply without a rebuild
+            p.cfg.default_duration = self.cfg.default_duration;
+            p.cfg.transition = self.cfg.transition;
+            p.cfg.transition_secs = self.cfg.transition_secs;
+            for (a, b) in p.cfg.landscapes.iter_mut().zip(self.cfg.landscapes.iter()) {
+                a.duration = b.duration;
+            }
+        }
+    }
+
+    fn landscape_list(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Landscapes");
+        ui.horizontal(|ui| {
+            if ui.button("Add images…").clicked() {
+                if let Some(files) = rfd::FileDialog::new().add_filter("Images", &IMAGE_EXTENSIONS).pick_files() {
+                    self.add_files(files);
+                }
+            }
+            if ui.button("Add folder…").clicked() {
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    let mut files: Vec<_> = std::fs::read_dir(dir).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+                    files.sort();
+                    self.add_files(files);
+                }
+            }
+        });
+        ui.label("Images are copied into the screensaver's own folder, so moving the originals is safe.");
+        ui.add_space(6.0);
+        let mut action: Option<(usize, i32)> = None; // (index, -1 up, +1 down, 0 remove)
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let n = self.cfg.landscapes.len();
+            for i in 0..n {
+                let missing = !self.cfg.landscapes[i].path.exists();
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.cfg.landscapes[i].enabled, "");
+                    let mut name = self.cfg.landscapes[i].name();
+                    if missing {
+                        name.push_str(" (missing)");
+                    }
+                    if ui.selectable_label(self.selected == Some(i), name).clicked() {
+                        self.selected = Some(i);
+                        let e = self.selected_in_enabled_for(i);
+                        if let (Some(p), Some(e)) = (&mut self.preview, e) {
+                            p.jump_to(e);
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(26.0);
+                    let l = &mut self.cfg.landscapes[i];
+                    let mut custom = l.duration.is_some();
+                    if ui.checkbox(&mut custom, "own time").changed() {
+                        l.duration = if custom { Some(self.cfg.default_duration) } else { None };
+                    }
+                    if let Some(d) = &mut l.duration {
+                        ui.add(egui::DragValue::new(d).range(2.0..=7200.0).speed(1.0).suffix(" s"));
+                    } else {
+                        ui.weak(format!("{} s", self.cfg.default_duration.round()));
+                    }
+                    if ui.small_button("Up").on_hover_text("Move up").clicked() {
+                        action = Some((i, -1));
+                    }
+                    if ui.small_button("Down").on_hover_text("Move down").clicked() {
+                        action = Some((i, 1));
+                    }
+                    if ui.small_button("Remove").on_hover_text("Remove from the list").clicked() {
+                        action = Some((i, 0));
+                    }
+                });
+                ui.separator();
+            }
+            if n == 0 {
+                ui.weak("No landscapes yet. Add some images to get started.");
+            }
+        });
+        if let Some((i, dir)) = action {
+            let n = self.cfg.landscapes.len();
+            match dir {
+                0 => {
+                    self.cfg.landscapes.remove(i);
+                    self.selected = if self.cfg.landscapes.is_empty() { None } else { Some(i.min(self.cfg.landscapes.len() - 1)) };
+                }
+                -1 if i > 0 => {
+                    self.cfg.landscapes.swap(i, i - 1);
+                    self.selected = Some(i - 1);
+                }
+                1 if i + 1 < n => {
+                    self.cfg.landscapes.swap(i, i + 1);
+                    self.selected = Some(i + 1);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn selected_in_enabled_for(&self, sel: usize) -> Option<usize> {
+        let l = self.cfg.landscapes.get(sel)?;
+        if !l.enabled || !l.path.exists() {
+            return None;
+        }
+        Some(self.cfg.landscapes[..sel].iter().filter(|l| l.enabled && l.path.exists()).count())
+    }
+
+    fn controls(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().slider_width = 190.0;
+        let c = &mut self.cfg;
+        egui::Grid::new("controls").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+            ui.strong("Display");
+            ui.end_row();
+            ui.label("Time per landscape");
+            ui.add(egui::Slider::new(&mut c.default_duration, 2.0..=1800.0).logarithmic(true).suffix(" s"));
+            ui.end_row();
+            ui.label("");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut c.shuffle, "Shuffle");
+                ui.checkbox(&mut c.different_per_monitor, "Different landscape on each monitor");
+            });
+            ui.end_row();
+
+            ui.strong("Transition");
+            ui.end_row();
+            ui.label("Kind");
+            egui::ComboBox::from_id_salt("transition").selected_text(c.transition.label()).show_ui(ui, |ui| {
+                for k in TransitionKind::ALL {
+                    ui.selectable_value(&mut c.transition, k, k.label());
+                }
+            });
+            ui.end_row();
+            ui.label("Length");
+            ui.add(egui::Slider::new(&mut c.transition_secs, 0.2..=10.0).suffix(" s"));
+            ui.end_row();
+
+            ui.strong("Look");
+            ui.end_row();
+            ui.label("Pixelation");
+            let px = pixel_size(c.look.pixelation);
+            ui.add(egui::Slider::new(&mut c.look.pixelation, 0.0..=1.0).show_value(false))
+                .on_hover_text("Left: full resolution. Right: big chunky pixels.");
+            ui.end_row();
+            ui.label("");
+            ui.weak(if px < 1.5 { "full resolution".to_string() } else { format!("{px:.0} px blocks at 1080p") });
+            ui.end_row();
+            ui.label("ASCII");
+            ui.add(egui::Slider::new(&mut c.look.ascii, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)))
+                .on_hover_text("How much of the screen is drawn as text characters.");
+            ui.end_row();
+            ui.label("Full colour <-> Stylized");
+            ui.add(egui::Slider::new(&mut c.look.stylize, 0.0..=1.0).show_value(false))
+                .on_hover_text("Left: the photo's own colours. Right: warm, limited, dithered palette in the Claude FM style.");
+            ui.end_row();
+            ui.label("Palette colours");
+            ui.add(egui::Slider::new(&mut c.look.colors, 4..=48));
+            ui.end_row();
+            ui.label("Dither");
+            ui.add(egui::Slider::new(&mut c.look.dither, 0.0..=1.5));
+            ui.end_row();
+
+            ui.strong("Motion");
+            ui.end_row();
+            ui.label("Clouds");
+            ui.add(egui::Slider::new(&mut c.look.clouds, 0.0..=1.0));
+            ui.end_row();
+            ui.label("Birds");
+            ui.add(egui::Slider::new(&mut c.look.birds, 0..=12));
+            ui.end_row();
+            ui.label("Dust / fireflies");
+            ui.add(egui::Slider::new(&mut c.look.motes, 0..=80));
+            ui.end_row();
+            ui.label("");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut c.look.water, "Ripple lakes");
+                ui.checkbox(&mut c.look.stars, "Stars at night");
+            });
+            ui.end_row();
+            ui.label("Frame rate");
+            ui.add(egui::Slider::new(&mut c.fps, 10..=60).suffix(" fps"));
+            ui.end_row();
+
+            ui.strong("Logo");
+            ui.end_row();
+            ui.label("");
+            ui.checkbox(&mut c.logo.enabled, "Show a centred logo");
+            ui.end_row();
+            ui.label("Image");
+            ui.horizontal(|ui| {
+                if ui.button("Choose…").clicked() {
+                    if let Some(f) = rfd::FileDialog::new().add_filter("Images", &IMAGE_EXTENSIONS).pick_file() {
+                        c.logo.path = import_image(&f).ok().or(Some(f));
+                        c.logo.enabled = true;
+                    }
+                }
+                ui.weak(c.logo.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "none".into()));
+            });
+            ui.end_row();
+            ui.label("Size");
+            ui.add(egui::Slider::new(&mut c.logo.size, 0.05..=0.9).custom_formatter(|v, _| format!("{:.0}% of height", v * 100.0)));
+            ui.end_row();
+            ui.label("Opacity");
+            ui.add(egui::Slider::new(&mut c.logo.opacity, 0.05..=1.0));
+            ui.end_row();
+            ui.label("Breathing");
+            ui.add(egui::Slider::new(&mut c.logo.pulse, 0.0..=0.4));
+            ui.end_row();
+            ui.label("");
+            ui.checkbox(&mut c.logo.outline, "Darker rim (helps on bright skies)");
+            ui.end_row();
+        });
+    }
+}
+
+impl eframe::App for SettingsApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let dropped: Vec<_> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+        if !dropped.is_empty() {
+            self.add_files(dropped);
+        }
+        self.refresh_preview();
+
+        egui::Panel::bottom("buttons").show(ui, |ui| {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let label = if self.unsaved() { "Save *" } else { "Save" };
+                if ui.button(label).clicked() {
+                    self.save();
+                }
+                if ui.button("Revert").clicked() {
+                    self.cfg = Config::load();
+                    self.status = "Reverted to the saved settings.".into();
+                }
+                if ui.button("Test full screen").on_hover_text("Saves, then runs the screensaver. Move the mouse to stop.").clicked() {
+                    self.save();
+                    if let Ok(exe) = std::env::current_exe() {
+                        let _ = std::process::Command::new(exe).arg("/s").spawn();
+                    }
+                }
+                #[cfg(windows)]
+                if ui.button("Set as my screensaver").on_hover_text("Saves, then makes Windows use this screensaver.").clicked() {
+                    self.save();
+                    self.status = crate::install::set_as_screensaver();
+                }
+                ui.label(&self.status);
+            });
+            ui.add_space(6.0);
+        });
+
+        egui::Panel::left("list").resizable(true).default_size(330.0).show(ui, |ui| {
+            self.landscape_list(ui);
+        });
+
+        egui::Panel::right("controls").resizable(true).default_size(430.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.controls(ui));
+        });
+
+        egui::CentralPanel::default().show(ui, |ui| {
+            // live preview
+            let now = Instant::now();
+            let dt = (now - self.last).as_secs_f32().min(0.1);
+            self.last = now;
+            if let Some(p) = &mut self.preview {
+                p.update(dt, &mut self.frame);
+            }
+            let mut rgb = Vec::with_capacity(PW * PH * 3);
+            for &px in &self.frame {
+                rgb.extend_from_slice(&[(px >> 16) as u8, (px >> 8) as u8, px as u8]);
+            }
+            let img = egui::ColorImage::from_rgb([PW, PH], &rgb);
+            match &mut self.tex {
+                Some(t) => t.set(img, egui::TextureOptions::NEAREST),
+                None => self.tex = Some(ctx.load_texture("preview", img, egui::TextureOptions::NEAREST)),
+            }
+            let avail_w = ui.available_width();
+            let avail_h = (ui.available_height() - 40.0).max(100.0);
+            let w = avail_w.min(avail_h * PW as f32 / PH as f32);
+            if let Some(t) = &self.tex {
+                ui.add(egui::Image::new(t).fit_to_exact_size(egui::vec2(w, w * PH as f32 / PW as f32)));
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Next landscape >").on_hover_text("Plays the transition in the preview").clicked() {
+                    if let Some(p) = &mut self.preview {
+                        p.advance();
+                    }
+                }
+                ui.weak("Preview at reduced size. Drop image files anywhere on this window to add them.");
+            });
+        });
+
+        ctx.request_repaint_after(Duration::from_secs_f32(1.0 / self.cfg.fps.clamp(10, 60) as f32));
+    }
+}
