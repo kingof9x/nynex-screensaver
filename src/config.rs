@@ -83,7 +83,7 @@ impl Default for Look {
             pixelation: 0.55,
             ascii: 0.0,
             stylize: 1.0,
-            colors: 24,
+            colors: 16,
             dither: 0.8,
             clouds: 0.5,
             water: true,

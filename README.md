@@ -31,7 +31,7 @@ If something crashes, the details are written to `%APPDATA%\nynex-screensaver\cr
 | **Transition** | Crossfade, pixel dissolve, wipe, slide, pixelate, fade through black, or random, with its length. |
 | **Pixelation** | From full resolution to big chunky pixels. |
 | **ASCII** | Fades the picture into coloured text characters. |
-| **Full colour ↔ Stylized** | From the photo's own colours to a warm, limited, dithered palette (the Claude FM look). Palette size and dither strength are adjustable. |
+| **Full colour ↔ Stylized** | From the photo's own colours to the Claude FM look: a small dithered palette pulled onto warm clay and plum, dusty blue skies and sage greens, all ending in cream. Palette size and dither strength are adjustable. |
 | **Motion** | Cloud amount, birds, dust/fireflies, lake ripples, night stars and frame rate. |
 | **Logo** | Any image shown in the centre: a transparent PNG, or dark artwork on white. Adjust its size, opacity and breathing, and whether it has a darker rim. |
 

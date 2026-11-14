@@ -205,6 +205,57 @@ fn grade(c: Rgb) -> Rgb {
     out
 }
 
+/// The Claude FM colour language: three gradient ramps, dark to light, that every colour
+/// is pulled onto at the stylized end. Warm clay and plum for most things, dusty slate blue
+/// for skies and water, olive and sage for vegetation; all of them end in the same cream.
+const RAMP_WARM: [u32; 8] = [0x1c1420, 0x3b2533, 0x6e3b45, 0xa65650, 0xd97757, 0xeaa774, 0xf3d3a4, 0xf8eedd];
+const RAMP_BLUE: [u32; 8] = [0x161a2c, 0x26345a, 0x3d5584, 0x5f7fa8, 0x8aa6c0, 0xb8c9cf, 0xdfdfd2, 0xf6ecdc];
+const RAMP_GREEN: [u32; 8] = [0x141a12, 0x24331f, 0x3a4f2c, 0x55703b, 0x7a8f50, 0xa6b07a, 0xd2d2a4, 0xf1ead0];
+
+fn ramp(r: &[u32; 8], t: f32) -> Rgb {
+    let x = t.clamp(0.0, 1.0) * 7.0;
+    let i = (x as usize).min(6);
+    let f = x - i as f32;
+    let c = |v: u32| [((v >> 16) & 255) as f32, ((v >> 8) & 255) as f32, (v & 255) as f32];
+    mix(c(r[i]), c(r[i + 1]), f)
+}
+
+/// Map a colour onto the FM ramps, keeping the lightness of `c` and choosing the ramp by the
+/// hue of `hue_from`.
+fn fm_color(c: Rgb, hue_from: Rgb) -> Rgb {
+    let (r, g, b) = (hue_from[0] / 255.0, hue_from[1] / 255.0, hue_from[2] / 255.0);
+    let mx = r.max(g).max(b);
+    let mn = r.min(g).min(b);
+    let sat = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
+    let hue = if mx - mn < 1e-5 {
+        0.0
+    } else if mx == r {
+        60.0 * (((g - b) / (mx - mn)).rem_euclid(6.0))
+    } else if mx == g {
+        60.0 * ((b - r) / (mx - mn) + 2.0)
+    } else {
+        60.0 * ((r - g) / (mx - mn) + 4.0)
+    };
+    let bump = |centre: f32, width: f32| {
+        let d = ((hue - centre + 180.0).rem_euclid(360.0) - 180.0).abs();
+        (1.0 - d / width).clamp(0.0, 1.0)
+    };
+    let chroma = (sat * 2.5).clamp(0.0, 1.0);
+    let wb = bump(215.0, 75.0) * chroma;
+    let wg = bump(95.0, 70.0) * chroma;
+    let ww = (1.0 - (wb + wg) * 1.5).max(0.0) + 0.02;
+    let t = (wb + wg + ww).max(1e-5);
+    // gentle S-curve on lightness so the result has the poster-like contrast of the stream
+    let l = lum(c) / 255.0;
+    let l = (l * l * (3.0 - 2.0 * l)) * 0.6 + l * 0.4;
+    let (a, bb, cc) = (ramp(&RAMP_WARM, l), ramp(&RAMP_BLUE, l), ramp(&RAMP_GREEN, l));
+    [
+        (a[0] * ww + bb[0] * wb + cc[0] * wg) / t,
+        (a[1] * ww + bb[1] * wb + cc[1] * wg) / t,
+        (a[2] * ww + bb[2] * wb + cc[2] * wg) / t,
+    ]
+}
+
 fn kmeans_palette(px: &[Rgb], k: usize) -> Vec<Rgb> {
     let step = (px.len() / 8000).max(1);
     let data: Vec<Rgb> = px.iter().step_by(step).copied().collect();
@@ -423,7 +474,34 @@ impl Scene {
         let sky_a = find_sky(&small_v, aw, ah);
         let water_a = if look.water { find_water_line(&small_v, aw, ah) } else { None };
         let graded_small: Vec<Rgb> = small_v.iter().map(|&c| grade(c)).collect();
-        let pal = kmeans_palette(&graded_small, look.colors as usize);
+        let pal_match = kmeans_palette(&graded_small, look.colors as usize);
+        // what each palette entry is drawn as: pulled onto the FM ramps by the stylize amount
+        // The grade warms everything, so pick each entry's FM ramp from the ungraded colours
+        // it stands for (otherwise green grass would land on the warm ramp and turn brown).
+        let mut src_sum = vec![[0.0f32; 4]; pal_match.len()];
+        for (g, o) in graded_small.iter().zip(small_v.iter()) {
+            let mut best = (f32::MAX, 0);
+            for (j, p) in pal_match.iter().enumerate() {
+                let d = (g[0] - p[0]).powi(2) + (g[1] - p[1]).powi(2) + (g[2] - p[2]).powi(2);
+                if d < best.0 {
+                    best = (d, j);
+                }
+            }
+            let e = &mut src_sum[best.1];
+            e[0] += o[0];
+            e[1] += o[1];
+            e[2] += o[2];
+            e[3] += 1.0;
+        }
+        let pull = look.stylize.clamp(0.0, 1.0).powf(0.8);
+        let pal: Vec<Rgb> = pal_match
+            .iter()
+            .zip(src_sum.iter())
+            .map(|(&c, e)| {
+                let hue_from = if e[3] > 0.0 { [e[0] / e[3], e[1] / e[3], e[2] / e[3]] } else { c };
+                mix(c, fm_color(c, hue_from), pull)
+            })
+            .collect();
 
         // grid
         let grid_img = image::imageops::resize(&cropped, gw as u32, gh as u32, FilterType::Triangle);
@@ -452,7 +530,7 @@ impl Scene {
         for (i, e) in lut.iter_mut().enumerate() {
             let c = [((i >> 10) & 31) as f32 * 8.0 + 4.0, ((i >> 5) & 31) as f32 * 8.0 + 4.0, (i & 31) as f32 * 8.0 + 4.0];
             let mut best = (f32::MAX, 0u8);
-            for (j, p) in pal.iter().enumerate() {
+            for (j, p) in pal_match.iter().enumerate() {
                 let d = (c[0] - p[0]).powi(2) + (c[1] - p[1]).powi(2) + (c[2] - p[2]).powi(2);
                 if d < best.0 {
                     best = (d, j as u8);
@@ -460,7 +538,7 @@ impl Scene {
             }
             *e = best.1;
         }
-        let mut steps: Vec<f32> = pal
+        let mut steps: Vec<f32> = pal_match
             .windows(2)
             .map(|w| (w[1][0] - w[0][0]).abs() + (w[1][1] - w[0][1]).abs() + (w[1][2] - w[0][2]).abs())
             .collect();
