@@ -44,7 +44,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target\release\nynex.exe dist\nynex.scr
+          Copy-Item target\release\nynex.exe dist\nynex.exe
           Copy-Item README.md dist\README.md
           Compress-Archive -Path dist\* -DestinationPath nynex-screensaver-windows-x64.zip -Force
 
@@ -52,7 +52,7 @@ jobs:
         with:
           name: nynex-screensaver-windows-x64
           path: |
-            dist/nynex.scr
+            dist/nynex.exe
             dist/README.md
 
       - name: Publish release
@@ -63,10 +63,10 @@ jobs:
           TAG: ${{ inputs.version != '' && inputs.version || github.ref_name }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" nynex-screensaver-windows-x64.zip dist/nynex.scr --clobber
+            gh release upload "$TAG" nynex-screensaver-windows-x64.zip dist/nynex.exe --clobber
           else
             gh release create "$TAG" \
-              nynex-screensaver-windows-x64.zip dist/nynex.scr \
+              nynex-screensaver-windows-x64.zip dist/nynex.exe \
               --target "$GITHUB_SHA" \
               --title "nynex screensaver $TAG" \
               --generate-notes

@@ -14,12 +14,12 @@ const PH: usize = 540;
 pub fn run() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("nynex screensaver settings")
+            .with_title("nynex")
             .with_inner_size([1440.0, 880.0])
             .with_min_inner_size([900.0, 600.0]),
         ..Default::default()
     };
-    eframe::run_native("nynex screensaver settings", options, Box::new(|_cc| Ok(Box::new(SettingsApp::new()))))
+    eframe::run_native("nynex", options, Box::new(|_cc| Ok(Box::new(SettingsApp::new()))))
 }
 
 struct SettingsApp {
@@ -33,13 +33,19 @@ struct SettingsApp {
     tex: Option<egui::TextureHandle>,
     last: Instant,
     status: String,
+    /// Minutes of idle before Windows starts the screensaver.
+    #[allow(dead_code)]
+    wait_minutes: u32,
+    #[allow(dead_code)]
+    is_screensaver: bool,
 }
 
 impl SettingsApp {
     fn new() -> Self {
         let cfg = Config::load();
         let saved = serde_json::to_string(&cfg).unwrap_or_default();
-        SettingsApp {
+        #[allow(unused_mut)]
+        let mut app = SettingsApp {
             selected: if cfg.landscapes.is_empty() { None } else { Some(0) },
             cfg,
             saved,
@@ -50,6 +56,22 @@ impl SettingsApp {
             tex: None,
             last: Instant::now(),
             status: String::new(),
+            wait_minutes: 10,
+            is_screensaver: false,
+        };
+        #[cfg(windows)]
+        {
+            let (on, mins) = crate::install::status();
+            app.is_screensaver = on;
+            app.wait_minutes = mins;
+        }
+        app
+    }
+
+    fn launch(&mut self, arg: &str) {
+        match std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg(arg).spawn()) {
+            Ok(_) => {}
+            Err(e) => self.status = format!("Could not start it: {e}"),
         }
     }
 
@@ -337,6 +359,45 @@ impl eframe::App for SettingsApp {
         }
         self.refresh_preview();
 
+        egui::Panel::top("play").show(ui, |ui| {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.heading("nynex");
+                ui.separator();
+                if ui.button("Play in a window").on_hover_text("Saves, then plays the animation in a normal window.").clicked() {
+                    self.save();
+                    self.launch("--window");
+                }
+                if ui.button("Play full screen").on_hover_text("Saves, then plays it full screen. Move the mouse or press a key to stop.").clicked() {
+                    self.save();
+                    self.launch("/s");
+                }
+                #[cfg(windows)]
+                {
+                    ui.separator();
+                    ui.label("Start after");
+                    ui.add(egui::DragValue::new(&mut self.wait_minutes).range(1..=180).suffix(" min"));
+                    let label = if self.is_screensaver { "Update screensaver" } else { "Use as my screensaver" };
+                    if ui.button(label).on_hover_text("Saves, then makes Windows start nynex when the PC is idle.").clicked() {
+                        self.save();
+                        self.status = crate::install::set_as_screensaver(self.wait_minutes);
+                        self.is_screensaver = crate::install::status().0;
+                    }
+                    if self.is_screensaver && ui.button("Turn off").on_hover_text("Stops Windows from starting a screensaver.").clicked() {
+                        self.status = crate::install::turn_off();
+                        self.is_screensaver = crate::install::status().0;
+                    }
+                }
+                #[cfg(windows)]
+                ui.label(if self.is_screensaver {
+                    format!("Your screensaver, after {} min idle", self.wait_minutes)
+                } else {
+                    "Not your screensaver yet".to_string()
+                });
+            });
+            ui.add_space(6.0);
+        });
+
         egui::Panel::bottom("buttons").show(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -347,17 +408,6 @@ impl eframe::App for SettingsApp {
                 if ui.button("Revert").clicked() {
                     self.cfg = Config::load();
                     self.status = "Reverted to the saved settings.".into();
-                }
-                if ui.button("Test full screen").on_hover_text("Saves, then runs the screensaver. Move the mouse to stop.").clicked() {
-                    self.save();
-                    if let Ok(exe) = std::env::current_exe() {
-                        let _ = std::process::Command::new(exe).arg("/s").spawn();
-                    }
-                }
-                #[cfg(windows)]
-                if ui.button("Set as my screensaver").on_hover_text("Saves, then makes Windows use this screensaver.").clicked() {
-                    self.save();
-                    self.status = crate::install::set_as_screensaver();
                 }
                 ui.label(&self.status);
             });
