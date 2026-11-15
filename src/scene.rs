@@ -27,6 +27,7 @@ const BAYER4: [[f32; 4]; 4] = [
     [3.0, 11.0, 1.0, 9.0],
     [15.0, 7.0, 13.0, 5.0],
 ];
+const GLITCH_CHARS: &[u8] = b"#%&@$*+=/\\<>[]{}01|~^?!";
 const ASCII_RAMP: &[u8] = b" .:-=+*#%@";
 
 #[inline]
@@ -692,6 +693,9 @@ impl Scene {
         let (gw, gh) = (self.gw, self.gh);
         let tau = std::f32::consts::TAU;
         let unit = gw as f32 / 480.0; // effect sizes are tuned for a 480-wide grid
+        // wind speeds things up; 0.3 (the default) is the original pace
+        let wind = self.look.wind.clamp(0.0, 1.0);
+        let wf = 0.25 + wind * 2.5;
         self.work.copy_from_slice(&self.start);
 
         // water: each row slides sideways on slow sine waves, deeper rows move more
@@ -717,7 +721,7 @@ impl Scene {
         if self.look.clouds > 0.0 {
             let (cw, ch) = (self.cw, self.ch);
             let period = 4i64;
-            let drift = t / 60.0 * period as f32; // one tile per minute
+            let drift = t * wf / 60.0 * period as f32; // one tile per minute at the default wind
             let hzc = (self.hz / gh as f32 * ch as f32).max(1.0);
             let thr = 1.0 - self.look.clouds * 0.45;
             let seed = self.seed + 5;
@@ -830,7 +834,7 @@ impl Scene {
         // birds
         let dark = self.pal[0];
         for b in &self.birds {
-            let x = ((t / 40.0 + b.off).fract()) * (gw as f32 + 20.0 * unit) - 10.0 * unit;
+            let x = ((t * (0.6 + wf * 0.4) / 40.0 + b.off).fract()) * (gw as f32 + 20.0 * unit) - 10.0 * unit;
             let y = b.y + 2.0 * unit * (tau * (t / 4.0 + b.ph)).sin();
             let flap = (tau * (t * 2.0 + b.ph)).sin() > 0.0;
             let s = unit.max(1.0).round() as i64;
@@ -855,12 +859,38 @@ impl Scene {
         // motes / fireflies drifting upward with a sway
         for m in &self.motes {
             let y = (m.y - t / 48.0 * gh as f32 * 0.25 * m.f).rem_euclid(gh as f32);
-            let x = (m.x + 3.0 * unit * (tau * (t / 12.0 * m.f + m.ph)).sin()).rem_euclid(gw as f32);
+            let gust = (wind - 0.3).max(0.0) * t * gw as f32 / 25.0 * m.f;
+            let x = (m.x + gust + 3.0 * unit * (1.0 + wind * 2.0) * (tau * (t / 12.0 * m.f + m.ph)).sin()).rem_euclid(gw as f32);
             let v = (tau * (t / 3.0 * m.f + m.ph)).sin();
             let (xi, yi) = (x as usize % gw, y as usize % gh);
             let i = yi * gw + xi;
             if v > -0.2 && !self.sky[i] {
                 self.work[i] = mix(self.work[i], [255.0, 226.0, 170.0], 0.55 * (v + 0.2).min(1.0));
+            }
+        }
+
+        // wind streaks: thin pale lines racing across the sky in a strong breeze
+        let streaks = ((wind - 0.4).max(0.0) * 14.0) as usize;
+        for k in 0..streaks {
+            let speed = gw as f32 * (0.5 + wind);
+            let life = 3.0 + hash2(k as i64, 1, self.seed + 31) * 3.0;
+            let cyc = ((t + k as f32 * 1.7) / life).floor();
+            let ph = ((t + k as f32 * 1.7) / life).fract();
+            let y = (hash2(k as i64, cyc as i64, self.seed + 32) * self.hz.max(4.0)) as usize;
+            let len = (8.0 + hash2(k as i64, cyc as i64, self.seed + 33) * 24.0) * unit;
+            let x0 = ph * (speed * life / 3.0) - len - hash2(k as i64, cyc as i64, self.seed + 34) * gw as f32 * 0.3;
+            let fade = (ph * std::f32::consts::PI).sin();
+            for d in 0..len as i64 {
+                let x = x0 as i64 + d;
+                if x >= 0 && (x as usize) < gw && y < gh {
+                    let i = y * gw + x as usize;
+                    if self.sky[i] {
+                        let a = 0.4 * fade * (d as f32 / len).min(1.0);
+                        // pale line on a darker sky, faint grey-blue line on a bright one
+                        let col = if lum(self.work[i]) > 200.0 { [168.0, 182.0, 196.0] } else { [250.0, 246.0, 238.0] };
+                        self.work[i] = mix(self.work[i], col, a);
+                    }
+                }
             }
         }
 
@@ -883,9 +913,41 @@ impl Scene {
             }
         });
 
+        // sparkles: little four-point stars that twinkle in and out, drawn after the palette
+        // so they stay crisp; dark ink on bright ground, warm light on dark ground
+        for k in 0..self.look.sparkles as usize {
+            let life = 1.6 + hash2(k as i64, 2, self.seed + 41) * 2.4;
+            let tt = t + hash2(k as i64, 3, self.seed + 41) * life;
+            let cyc = (tt / life).floor() as i64;
+            let b = ((tt / life).fract() * std::f32::consts::PI).sin().powi(3);
+            let x = (hash2(k as i64, cyc, self.seed + 42) * gw as f32) as i64;
+            let y = (hash2(k as i64, cyc, self.seed + 43) * gh as f32) as i64;
+            let arm = ((1.0 + b * 2.0) * unit.max(1.0)).round() as i64;
+            let s = unit.max(1.0).round() as i64;
+            if x < 0 || y < 0 || x as usize >= gw || y as usize >= gh {
+                continue;
+            }
+            let ground = unpack(self.grid[y as usize * gw + x as usize]);
+            let col = if lum(ground) > 190.0 { [217.0, 119.0, 87.0] } else { [255.0, 244.0, 214.0] };
+            for d in -arm..=arm {
+                let a = if d == 0 { b } else { b * (1.0 - d.abs() as f32 / (arm + 1) as f32) };
+                for (px, py) in [(x + d * s, y), (x, y + d * s)] {
+                    for sy in 0..s {
+                        for sx in 0..s {
+                            let (qx, qy) = (px + sx, py + sy);
+                            if qx >= 0 && qy >= 0 && (qx as usize) < gw && (qy as usize) < gh {
+                                let i = qy as usize * gw + qx as usize;
+                                self.grid[i] = pack(mix(unpack(self.grid[i]), col, a));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         self.upscale(out);
-        if self.look.ascii > 0.001 {
-            self.ascii(out);
+        if self.look.ascii > 0.001 || self.look.glitch > 0.001 {
+            self.ascii(out, t);
         }
     }
 
@@ -903,21 +965,40 @@ impl Scene {
 
     /// Draw the screen as text cells: each cell gets a character picked by brightness, in the
     /// cell's own colour on a dark ground. The ASCII amount fades from the picture to the text.
-    fn ascii(&self, out: &mut [u32]) {
+    /// Glitches: now and then a short run of cells flickers into random characters for a
+    /// fraction of a second, whatever the ASCII amount.
+    fn ascii(&self, out: &mut [u32], t: f32) {
         let (sw, sh) = (self.sw, self.sh);
         let f = ((sh as f32 / 540.0).round() as usize).max(1);
         let cs = 8 * f;
-        let k = self.look.ascii.clamp(0.0, 1.0);
+        let base = self.look.ascii.clamp(0.0, 1.0);
+        let glitch = self.look.glitch.clamp(0.0, 1.0);
+        let tick = (t * 9.0).floor() as i64;
+        let seed = self.seed;
         let (grid, gw, gh) = (&self.grid, self.gw, self.gh);
         out.par_chunks_mut(sw * cs).enumerate().for_each(|(cy, band)| {
             let rows = band.len() / sw;
+            // one glitch decision per row per tick: a run starting somewhere along it
+            let g_on = glitch > 0.0 && hash2(cy as i64, tick, seed + 51) < glitch * glitch * 0.18;
+            let g_start = (hash2(cy as i64, tick, seed + 52) * sw.div_ceil(cs) as f32) as usize;
+            let g_len = 2 + (hash2(cy as i64, tick, seed + 53) * 10.0 * (0.4 + glitch)) as usize;
             for cx in 0..sw.div_ceil(cs) {
+                let glitched = g_on && cx >= g_start && cx < g_start + g_len;
+                let k = if glitched { 1.0 } else { base };
+                if k <= 0.001 {
+                    continue;
+                }
                 let px = (cx * cs + cs / 2).min(sw - 1);
                 let py = (cy * cs + cs / 2).min(sh - 1);
                 let c = unpack(grid[(py * gh / sh).min(gh - 1) * gw + (px * gw / sw).min(gw - 1)]);
                 let l = lum(c) / 255.0;
-                let gi = ((l * ASCII_RAMP.len() as f32) as usize).min(ASCII_RAMP.len() - 1);
-                let glyph = font8x8::legacy::BASIC_LEGACY[ASCII_RAMP[gi] as usize];
+                let ch = if glitched {
+                    GLITCH_CHARS[(hash2(cx as i64, tick * 31 + cy as i64, seed + 54) * GLITCH_CHARS.len() as f32) as usize % GLITCH_CHARS.len()]
+                } else {
+                    let gi = ((l * ASCII_RAMP.len() as f32) as usize).min(ASCII_RAMP.len() - 1);
+                    ASCII_RAMP[gi]
+                };
+                let glyph = font8x8::legacy::BASIC_LEGACY[ch as usize];
                 let bg = [c[0] * 0.14, c[1] * 0.14, c[2] * 0.14];
                 let fg = [c[0] * 1.2 + 24.0, c[1] * 1.2 + 24.0, c[2] * 1.2 + 24.0];
                 for ry in 0..rows {

@@ -32,7 +32,7 @@ If something crashes, the details are written to `%APPDATA%\nynex-screensaver\cr
 | **Pixelation** | From full resolution to big chunky pixels. |
 | **ASCII** | Fades the picture into coloured text characters. |
 | **Full colour ↔ Stylized** | From the photo's own colours to the Claude FM look: a high-key, mostly cream-white picture in a small dithered palette, with soft clay, pale blue and pale sage tints. Palette size and dither strength are adjustable. |
-| **Motion** | Cloud amount, birds, dust/fireflies, lake ripples, night stars and frame rate. |
+| **Motion** | Cloud amount, birds, dust/fireflies, sparkles, wind (faster clouds and birds, sideways dust, streaks across the sky), ASCII glitches (short runs of cells flickering into characters), lake ripples, night stars and frame rate. |
 | **Logo** | Any image shown in the centre: a transparent PNG, or dark artwork on white. Adjust its size, opacity and breathing, and whether it has a darker rim. |
 
 **Next landscape** under the preview plays the transition.
