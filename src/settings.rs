@@ -317,6 +317,9 @@ impl SettingsApp {
             ui.label("ASCII glitches");
             ui.add(egui::Slider::new(&mut c.look.glitch, 0.0..=1.0));
             ui.end_row();
+            ui.label("Code breaking through");
+            ui.add(egui::Slider::new(&mut c.look.breakthrough, 0.0..=1.0));
+            ui.end_row();
             ui.label("");
             ui.horizontal(|ui| {
                 ui.checkbox(&mut c.look.water, "Ripple lakes");

@@ -25,14 +25,14 @@ If something crashes, the details are written to `%APPDATA%\nynex-screensaver\cr
 
 | | |
 |---|---|
-| **Landscapes** | Add images or a whole folder (or drop files on the window). Untick an image to skip it, reorder it, or give it its own display time. Added images are copied to `%APPDATA%\nynex-screensaver\landscapes`. |
+| **Landscapes** | Add images or a whole folder (or drop files on the window). Animated GIFs play every frame with their own timing (up to 300 frames). Untick an image to skip it, reorder it, or give it its own display time. Added images are copied to `%APPDATA%\nynex-screensaver\landscapes`. |
 | **Time per landscape** | The default display time, from 2 seconds to 30 minutes. |
 | **Shuffle / different per monitor** | Plays in random order, and shows a different landscape on each screen. |
 | **Transition** | Crossfade, pixel dissolve, wipe, slide, pixelate, fade through black, or random, with its length. |
 | **Pixelation** | From full resolution to big chunky pixels. |
 | **ASCII** | Fades the picture into coloured text characters. |
 | **Full colour ↔ Stylized** | From the photo's own colours to the Claude FM look: a high-key, mostly cream-white picture in a small dithered palette, with soft clay, pale blue and pale sage tints. Palette size and dither strength are adjustable. |
-| **Motion** | Cloud amount, birds, dust/fireflies, sparkles, wind (faster clouds and birds, sideways dust, streaks across the sky), ASCII glitches (short runs of cells flickering into characters), lake ripples, night stars and frame rate. |
+| **Motion** | Cloud amount, birds, dust/fireflies, sparkles, wind (faster clouds and birds, sideways dust, streaks across the sky), ASCII glitches (short runs of cells flickering into characters), code breaking through (the picture tears open and nynex's own source code scrolls through the crack), lake ripples, night stars and frame rate. |
 | **Logo** | Any image shown in the centre: a transparent PNG, or dark artwork on white. Adjust its size, opacity and breathing, and whether it has a darker rim. |
 
 **Next landscape** under the preview plays the transition.
