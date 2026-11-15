@@ -81,6 +81,8 @@ pub struct Look {
     pub sparkles: u32,
     /// 0 = still air, 1 = a strong breeze: faster clouds and birds, sideways dust, wind streaks.
     pub wind: f32,
+    /// How often the picture tears open to show the program's own code underneath.
+    pub breakthrough: f32,
 }
 
 impl Default for Look {
@@ -99,6 +101,7 @@ impl Default for Look {
             glitch: 0.15,
             sparkles: 10,
             wind: 0.3,
+            breakthrough: 0.2,
         }
     }
 }

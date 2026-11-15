@@ -28,6 +28,19 @@ const BAYER4: [[f32; 4]; 4] = [
     [15.0, 7.0, 13.0, 5.0],
 ];
 const GLITCH_CHARS: &[u8] = b"#%&@$*+=/\\<>[]{}01|~^?!";
+/// The program's own source, shown by the "code breaking through" effect.
+fn code_lines() -> &'static [String] {
+    static LINES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    LINES.get_or_init(|| {
+        [include_str!("scene.rs"), include_str!("player.rs"), include_str!("saver.rs")]
+            .iter()
+            .flat_map(|s| s.lines())
+            .map(|l| l.replace('\t', "    "))
+            .filter(|l| !l.trim().is_empty())
+            .collect()
+    })
+}
+
 const ASCII_RAMP: &[u8] = b" .:-=+*#%@";
 
 #[inline]
@@ -100,16 +113,46 @@ fn wfbm(x: f32, y: f32, seed: u32, period: i64) -> f32 {
 /// A decoded landscape photo, shrunk so the longest side is at most 2560 px.
 pub struct Source {
     pub img: RgbImage,
+    /// For an animated GIF: every frame and how long it shows, in seconds. Empty for stills.
+    pub frames: Vec<(RgbImage, f32)>,
+}
+
+/// Most frames kept from an animated GIF (memory stays modest even for long loops).
+const MAX_GIF_FRAMES: usize = 300;
+
+fn load_gif_frames(path: &Path) -> Vec<(RgbImage, f32)> {
+    use image::AnimationDecoder;
+    let Ok(file) = std::fs::File::open(path) else { return Vec::new() };
+    let Ok(dec) = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(file)) else { return Vec::new() };
+    let mut out = Vec::new();
+    for f in dec.into_frames().take(MAX_GIF_FRAMES) {
+        let Ok(f) = f else { break };
+        let (n, d) = f.delay().numer_denom_ms();
+        // browsers treat very short delays as 0.1 s; do the same
+        let secs = if d == 0 || n as f32 / d as f32 <= 10.0 { 0.1 } else { n as f32 / d as f32 / 1000.0 };
+        let img = image::DynamicImage::ImageRgba8(f.into_buffer());
+        let img = if img.width() > 1280 || img.height() > 1280 { img.resize(1280, 1280, FilterType::Triangle) } else { img };
+        out.push((img.to_rgb8(), secs));
+    }
+    if out.len() < 2 {
+        out.clear();
+    }
+    out
 }
 
 pub fn load_source(path: &Path) -> Result<Arc<Source>, String> {
+    let is_gif = path.extension().map(|e| e.eq_ignore_ascii_case("gif")).unwrap_or(false);
+    let frames = if is_gif { load_gif_frames(path) } else { Vec::new() };
+    if let Some((first, _)) = frames.first() {
+        return Ok(Arc::new(Source { img: first.clone(), frames }));
+    }
     let img = image::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let img = if img.width() > 2560 || img.height() > 2560 {
         img.resize(2560, 2560, FilterType::Triangle)
     } else {
         img
     };
-    Ok(Arc::new(Source { img: img.to_rgb8() }))
+    Ok(Arc::new(Source { img: img.to_rgb8(), frames: Vec::new() }))
 }
 
 /// Logo artwork as coverage 0..1 (transparent PNGs use alpha; opaque art uses darkness).
@@ -431,6 +474,9 @@ pub struct Scene {
     pub gw: usize,
     pub gh: usize,
     start: Vec<Rgb>,
+    /// Animated GIF frames on the grid (graded), with the time each one ends; empty for stills.
+    anim: Vec<(Vec<[u8; 3]>, f32)>,
+    anim_frame: usize,
     sky: Vec<bool>,
     water_from: Option<usize>,
     hz: f32,
@@ -513,6 +559,29 @@ impl Scene {
         let photo = to_vec(&grid_img);
         let s = look.stylize.clamp(0.0, 1.0);
         let start: Vec<Rgb> = photo.iter().map(|&c| mix(c, grade(c), s)).collect();
+        // an animated GIF: prepare every frame the same way (the sky and water analysis
+        // comes from the first frame)
+        let mut anim = Vec::new();
+        let mut end = 0.0;
+        // keep memory to about 150 MB per screen: long GIFs drop frames evenly (their
+        // delays are merged so the timing stays right)
+        let budget = (150_000_000 / (gw * gh * 3).max(1)).clamp(2, MAX_GIF_FRAMES);
+        let step = src.frames.len().div_ceil(budget).max(1);
+        for chunk in src.frames.chunks(step) {
+            let (img, _) = &chunk[0];
+            let secs: f32 = chunk.iter().map(|f| f.1).sum();
+            let g = image::imageops::resize(&crop_to_aspect(img, aspect), gw as u32, gh as u32, FilterType::Triangle);
+            let cells = g
+                .pixels()
+                .map(|p| {
+                    let c = [p[0] as f32, p[1] as f32, p[2] as f32];
+                    let m = mix(c, grade(c), s);
+                    [m[0] as u8, m[1] as u8, m[2] as u8]
+                })
+                .collect();
+            end += secs;
+            anim.push((cells, end));
+        }
         let sky: Vec<bool> = (0..gw * gh)
             .map(|i| {
                 let (x, y) = (i % gw, i / gw);
@@ -663,6 +732,8 @@ impl Scene {
             gw,
             gh,
             start,
+            anim,
+            anim_frame: 0,
             sky,
             water_from,
             hz,
@@ -696,6 +767,16 @@ impl Scene {
         // wind speeds things up; 0.3 (the default) is the original pace
         let wind = self.look.wind.clamp(0.0, 1.0);
         let wf = 0.25 + wind * 2.5;
+        if let Some(total) = self.anim.last().map(|a| a.1) {
+            let at = t.rem_euclid(total.max(0.01));
+            let idx = self.anim.iter().position(|a| at < a.1).unwrap_or(0);
+            if idx != self.anim_frame {
+                self.anim_frame = idx;
+                for (d, s) in self.start.iter_mut().zip(self.anim[idx].0.iter()) {
+                    *d = [s[0] as f32, s[1] as f32, s[2] as f32];
+                }
+            }
+        }
         self.work.copy_from_slice(&self.start);
 
         // water: each row slides sideways on slow sine waves, deeper rows move more
@@ -948,6 +1029,112 @@ impl Scene {
         self.upscale(out);
         if self.look.ascii > 0.001 || self.look.glitch > 0.001 {
             self.ascii(out, t);
+        }
+        if self.look.breakthrough > 0.001 {
+            self.breakthrough(out, t);
+        }
+    }
+
+    /// "The code breaking through": every so often the picture tears along a band, rows slide
+    /// sideways with the colour channels split, and through a ragged crack you see this
+    /// program's own source code scrolling past, before the picture heals again.
+    fn breakthrough(&self, out: &mut [u32], t: f32) {
+        let (sw, sh) = (self.sw, self.sh);
+        let amount = self.look.breakthrough.clamp(0.0, 1.0);
+        let f = ((sh as f32 / 540.0).round() as usize).max(1);
+        let cs = 8 * f;
+        let (cols, rows) = (sw.div_ceil(cs), sh.div_ceil(cs));
+        let lines = code_lines();
+        let slots = 1 + (amount * 5.0) as usize;
+        let seed = self.seed + 61;
+        let mut row_buf = vec![0u32; sw];
+        for k in 0..slots {
+            let life = 0.8 + hash2(k as i64, 1, seed) * 2.2;
+            let gap = life * (3.5 - amount * 3.0).max(0.4);
+            let period = life + gap;
+            let tt = t + hash2(k as i64, 2, seed) * period;
+            let cyc = (tt / period).floor() as i64;
+            let age = tt - cyc as f32 * period;
+            if age > life || hash2(k as i64, cyc, seed + 1) > 0.35 + amount * 0.65 {
+                continue;
+            }
+            let p = age / life;
+            // opens fast, holds, closes
+            let open = (p / 0.15).min(1.0).min((1.0 - p) / 0.25).clamp(0.0, 1.0);
+            let h = |n: i64| hash2(k as i64 * 7 + n, cyc, seed + 2);
+            let band_rows = 2 + (h(1) * (3.0 + amount * 9.0)) as usize;
+            let r0 = (h(2) * rows.saturating_sub(band_rows) as f32) as usize;
+            let c_w = ((0.2 + h(3) * 0.5 + amount * 0.3) * cols as f32) as usize;
+            let c0 = (h(4) * cols.saturating_sub(c_w) as f32) as usize;
+            let tick = (t * 14.0).floor() as i64;
+
+            // 1. tear: rows around the band slide sideways with an RGB split
+            let y0 = r0.saturating_sub(1) * cs;
+            let y1 = ((r0 + band_rows + 1) * cs).min(sh);
+            for y in y0..y1 {
+                let slice = (y / (2 * f)) as i64;
+                let off = ((hash2(slice, tick, seed + 3) - 0.5) * 2.0 * open * (12 + (amount * 40.0) as i64) as f32 * f as f32) as i64;
+                if off == 0 {
+                    continue;
+                }
+                let row = &mut out[y * sw..(y + 1) * sw];
+                row_buf.copy_from_slice(row);
+                let split = (2 * f) as i64;
+                for x in 0..sw as i64 {
+                    let at = |dx: i64| row_buf[(x - off - dx).rem_euclid(sw as i64) as usize];
+                    let (r, g, b) = (at(split) >> 16 & 255, at(0) >> 8 & 255, at(-split) & 255);
+                    row[x as usize] = (r << 16) | (g << 8) | b;
+                }
+            }
+
+            // 2. crack: cells inside the band show scrolling source code on near-black
+            let start_line = (h(5) * lines.len() as f32) as usize;
+            let scroll = (age * 10.0) as usize;
+            let ccx = c0 as f32 + c_w as f32 / 2.0;
+            let ccy = r0 as f32 + band_rows as f32 / 2.0;
+            for r in r0..(r0 + band_rows).min(rows) {
+                // the row's text runs on into the following lines rather than repeating
+                let indent = (h(6) * 4.0) as usize;
+                let mut text: Vec<u8> = Vec::new();
+                let mut li = (start_line + scroll + (r - r0) * 3) % lines.len();
+                while text.len() < c_w + indent {
+                    text.extend_from_slice(lines[li].trim_start().as_bytes());
+                    text.extend_from_slice(b"  ");
+                    li = (li + 1) % lines.len();
+                }
+                let line = &text[..];
+                for c in c0..(c0 + c_w).min(cols) {
+                    // ragged edge: cells near the middle open first
+                    let dx = (c as f32 - ccx).abs() / (c_w as f32 / 2.0).max(1.0);
+                    let dy = (r as f32 - ccy).abs() / (band_rows as f32 / 2.0).max(1.0);
+                    let edge = dx.max(dy * 0.8);
+                    let jag = hash2(c as i64, r as i64 + cyc * 97, seed + 4) * 0.35;
+                    if edge + jag > open * 1.15 {
+                        continue;
+                    }
+                    let ch = line.get(c - c0 + indent).copied().unwrap_or(b' ');
+                    let ch = if ch.is_ascii_graphic() || ch == b' ' { ch } else { b' ' };
+                    // flicker a few characters
+                    let ch = if hash2(c as i64, r as i64 * 13 + tick, seed + 5) < 0.04 { b'#' } else { ch };
+                    let fg = if hash2(r as i64, cyc, seed + 6) < 0.2 { 0xf6ecdc } else { 0xd97757 };
+                    let bg = 0x141413;
+                    let glyph = font8x8::legacy::BASIC_LEGACY[ch as usize & 127];
+                    for gy in 0..cs {
+                        let y = r * cs + gy;
+                        if y >= sh {
+                            break;
+                        }
+                        let bits = glyph[gy / f];
+                        for gx in 0..cs {
+                            let x = c * cs + gx;
+                            if x >= sw {
+                                break;
+                            }
+                            out[y * sw + x] = if (bits >> (gx / f)) & 1 == 1 { fg } else { bg };
+                        }
+                    }
+                }
+            }
         }
     }
 
