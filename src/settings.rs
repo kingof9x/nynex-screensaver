@@ -308,6 +308,15 @@ impl SettingsApp {
             ui.label("Dust / fireflies");
             ui.add(egui::Slider::new(&mut c.look.motes, 0..=80));
             ui.end_row();
+            ui.label("Sparkles");
+            ui.add(egui::Slider::new(&mut c.look.sparkles, 0..=60));
+            ui.end_row();
+            ui.label("Wind");
+            ui.add(egui::Slider::new(&mut c.look.wind, 0.0..=1.0));
+            ui.end_row();
+            ui.label("ASCII glitches");
+            ui.add(egui::Slider::new(&mut c.look.glitch, 0.0..=1.0));
+            ui.end_row();
             ui.label("");
             ui.horizontal(|ui| {
                 ui.checkbox(&mut c.look.water, "Ripple lakes");

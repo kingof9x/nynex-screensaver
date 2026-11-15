@@ -75,6 +75,12 @@ pub struct Look {
     pub stars: bool,
     pub birds: u32,
     pub motes: u32,
+    /// How often small runs of cells flicker into ASCII characters, 0 = never.
+    pub glitch: f32,
+    /// Number of twinkling sparkles on screen at once.
+    pub sparkles: u32,
+    /// 0 = still air, 1 = a strong breeze: faster clouds and birds, sideways dust, wind streaks.
+    pub wind: f32,
 }
 
 impl Default for Look {
@@ -90,6 +96,9 @@ impl Default for Look {
             stars: true,
             birds: 3,
             motes: 18,
+            glitch: 0.15,
+            sparkles: 10,
+            wind: 0.3,
         }
     }
 }
