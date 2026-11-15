@@ -205,12 +205,13 @@ fn grade(c: Rgb) -> Rgb {
     out
 }
 
-/// The Claude FM colour language: three gradient ramps, dark to light, that every colour
-/// is pulled onto at the stylized end. Warm clay and plum for most things, dusty slate blue
-/// for skies and water, olive and sage for vegetation; all of them end in the same cream.
-const RAMP_WARM: [u32; 8] = [0x1c1420, 0x3b2533, 0x6e3b45, 0xa65650, 0xd97757, 0xeaa774, 0xf3d3a4, 0xf8eedd];
-const RAMP_BLUE: [u32; 8] = [0x161a2c, 0x26345a, 0x3d5584, 0x5f7fa8, 0x8aa6c0, 0xb8c9cf, 0xdfdfd2, 0xf6ecdc];
-const RAMP_GREEN: [u32; 8] = [0x141a12, 0x24331f, 0x3a4f2c, 0x55703b, 0x7a8f50, 0xa6b07a, 0xd2d2a4, 0xf1ead0];
+/// The Claude FM colour language: a high-key, mostly cream-white picture with soft tints.
+/// Three ramps, dark to light, that every colour is pulled onto at the stylized end: clay for
+/// most things, pale slate blue for skies and water, pale sage for vegetation. All of them end
+/// in the same cream paper white.
+const RAMP_WARM: [u32; 8] = [0x7a4a3c, 0xa8604b, 0xcf8061, 0xe3a98c, 0xeecbb5, 0xf4e2d4, 0xf8efe5, 0xfbf8f2];
+const RAMP_BLUE: [u32; 8] = [0x4f5d6e, 0x768898, 0x9eadba, 0xc0cbd3, 0xdae0e3, 0xe9ecea, 0xf3f3ee, 0xfbf8f2];
+const RAMP_GREEN: [u32; 8] = [0x56603f, 0x7a875f, 0xa0aa85, 0xc0c7a8, 0xd9dcc6, 0xe8eadc, 0xf3f2e8, 0xfbf8f2];
 
 fn ramp(r: &[u32; 8], t: f32) -> Rgb {
     let x = t.clamp(0.0, 1.0) * 7.0;
@@ -247,7 +248,9 @@ fn fm_color(c: Rgb, hue_from: Rgb) -> Rgb {
     let t = (wb + wg + ww).max(1e-5);
     // gentle S-curve on lightness so the result has the poster-like contrast of the stream
     let l = lum(c) / 255.0;
-    let l = (l * l * (3.0 - 2.0 * l)) * 0.6 + l * 0.4;
+    // high key: lift everything toward the cream paper colour, so most of the frame is near
+    // white and only the darkest parts keep a soft tint
+    let l = 0.1 + 0.9 * l.powf(0.62);
     let (a, bb, cc) = (ramp(&RAMP_WARM, l), ramp(&RAMP_BLUE, l), ramp(&RAMP_GREEN, l));
     [
         (a[0] * ww + bb[0] * wb + cc[0] * wg) / t,
@@ -493,7 +496,8 @@ impl Scene {
             e[2] += o[2];
             e[3] += 1.0;
         }
-        let pull = look.stylize.clamp(0.0, 1.0).powf(0.8);
+        // entries are drawn fully in FM colours; the stylize slider blends toward them per pixel
+        let pull = 1.0;
         let pal: Vec<Rgb> = pal_match
             .iter()
             .zip(src_sum.iter())
@@ -860,8 +864,9 @@ impl Scene {
             }
         }
 
-        // stylize: snap toward the dithered palette
-        let s = self.look.stylize.clamp(0.0, 1.0);
+        // stylize: snap toward the dithered FM palette (eased so the middle of the slider is
+        // already clearly stylized)
+        let s = self.look.stylize.clamp(0.0, 1.0).powf(0.7);
         let dstep = self.dither_step * self.look.dither * 2.0;
         let (pal, lut, work) = (&self.pal, &self.lut, &self.work);
         self.grid.par_chunks_mut(gw).enumerate().for_each(|(y, row)| {
