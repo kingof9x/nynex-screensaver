@@ -45,6 +45,10 @@ struct Win {
     size: (u32, u32),
     last: Instant,
     first_cursor: Option<PhysicalPosition<f64>>,
+    /// Wallpaper: this window's screen rectangle (left, top, right, bottom).
+    screen: (i32, i32, i32, i32),
+    /// Wallpaper: hidden behind a maximised or full-screen window, so not worth drawing.
+    covered: bool,
 }
 
 struct App {
@@ -86,7 +90,8 @@ impl App {
         let sz = window.inner_size();
         let (w, h) = (sz.width.max(1), sz.height.max(1));
         let seed = 0x5eed_u32.wrapping_add(index as u32 * 7919).wrapping_add(self.started.elapsed().subsec_nanos());
-        self.wins.push(Win { window, surface, player: None, index, seed, size: (w, h), last: Instant::now(), first_cursor: None });
+        let screen = (0, 0, 0, 0);
+        self.wins.push(Win { window, surface, player: None, index, seed, size: (w, h), last: Instant::now(), first_cursor: None, screen, covered: false });
     }
 
     fn quit_on_input(&self) -> bool {
@@ -113,6 +118,39 @@ fn cursor_pos() -> Option<(i32, i32)> {
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
     let mut p = POINT { x: 0, y: 0 };
     (unsafe { GetCursorPos(&mut p) } != 0).then_some((p.x, p.y))
+}
+
+/// True when the active window hides the screen rectangle `r` (it is maximised on that
+/// screen, or covers all of it), so an animated wallpaper there can't be seen.
+#[cfg(windows)]
+fn covered_by_foreground(r: (i32, i32, i32, i32)) -> bool {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.is_null() || IsIconic(fg) != 0 || IsWindowVisible(fg) == 0 {
+            return false;
+        }
+        let mut cls = [0u16; 64];
+        let n = GetClassNameW(fg, cls.as_mut_ptr(), cls.len() as i32).max(0) as usize;
+        let name = String::from_utf16_lossy(&cls[..n]);
+        if matches!(name.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") {
+            return false;
+        }
+        let mut wr = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if GetWindowRect(fg, &mut wr) == 0 {
+            return false;
+        }
+        let (cx, cy) = ((wr.left + wr.right) / 2, (wr.top + wr.bottom) / 2);
+        let on_this_screen = cx >= r.0 && cx < r.2 && cy >= r.1 && cy < r.3;
+        let covers = wr.left <= r.0 && wr.top <= r.1 && wr.right >= r.2 && wr.bottom >= r.3;
+        covers || (on_this_screen && IsZoomed(fg) != 0)
+    }
+}
+
+#[cfg(not(windows))]
+fn covered_by_foreground(_r: (i32, i32, i32, i32)) -> bool {
+    false
 }
 
 #[cfg(not(windows))]
@@ -197,8 +235,9 @@ impl ApplicationHandler for App {
                         .with_position(m.position())
                         .with_inner_size(m.size());
                     self.add_window(el, attrs, i);
-                    if let Some(w) = self.wins.last() {
+                    if let Some(w) = self.wins.last_mut() {
                         let (p, s) = (m.position(), m.size());
+                        w.screen = (p.x, p.y, p.x + s.width as i32, p.y + s.height as i32);
                         let result = match raw_hwnd(&w.window) {
                             Some(h) => crate::wallpaper::attach(h, p.x, p.y, s.width as i32, s.height as i32),
                             None => Err("No window handle.".into()),
@@ -323,6 +362,14 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         if matches!(self.mode, Mode::Wallpaper) && self.last_stop_check.elapsed() > Duration::from_millis(500) {
             self.last_stop_check = Instant::now();
+            for w in self.wins.iter_mut() {
+                let covered = covered_by_foreground(w.screen);
+                if w.covered && !covered {
+                    // pick up the animation where it was, not with a jump
+                    w.last = Instant::now();
+                }
+                w.covered = covered;
+            }
             if crate::wallpaper::stop_file().exists() {
                 let _ = std::fs::remove_file(crate::wallpaper::stop_file());
                 self.wins.clear();
@@ -355,7 +402,9 @@ impl ApplicationHandler for App {
         let now = Instant::now();
         if now >= self.next_frame {
             for w in &self.wins {
-                w.window.request_redraw();
+                if !w.covered {
+                    w.window.request_redraw();
+                }
             }
             self.next_frame += frame;
             if self.next_frame < now {

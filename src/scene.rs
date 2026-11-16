@@ -487,6 +487,8 @@ pub struct Scene {
     lut: Vec<u8>,
     dither_step: f32,
     glow: Option<Vec<f32>>,
+    /// Grid rectangle (x0, y0, x1, y1), end exclusive, outside which the glow is zero.
+    glow_box: (usize, usize, usize, usize),
     stars: Vec<Star>,
     motes: Vec<Mote>,
     birds: Vec<Bird>,
@@ -502,6 +504,11 @@ pub struct Scene {
     cw: usize,
     ch: usize,
     xmap: Vec<usize>,
+    /// When nothing on the grid moves (no clouds, water, glow, stars, birds, ...), the stylized
+    /// grid is the same every frame: it is kept here and reused instead of recomputed.
+    still_grid: Option<Vec<u32>>,
+    /// Likewise the full-screen ASCII picture (without glitches), when the grid is still.
+    still_screen: Option<Vec<u32>>,
 }
 
 /// Pixel size on screen for a pixelation slider value, at 1080p.
@@ -623,7 +630,7 @@ impl Scene {
         let dither_step = if steps.is_empty() { 32.0 } else { steps[steps.len() / 2] / 2.0 };
 
         // glow around the brightest light in the sky (not for a plain blue day sky)
-        let mut glow = None;
+        let mut glow: Option<Vec<f32>> = None;
         if !sky_l.is_empty() {
             let mut sum = [0.0f32; 3];
             let mut n = 0.0;
@@ -743,6 +750,19 @@ impl Scene {
             pal,
             lut,
             dither_step,
+            glow_box: glow.as_ref().map(|g| {
+                let (mut x0, mut y0, mut x1, mut y1) = (gw, gh, 0, 0);
+                for (i, &v) in g.iter().enumerate() {
+                    if v > 0.0 {
+                        let (x, y) = (i % gw, i / gw);
+                        x0 = x0.min(x);
+                        y0 = y0.min(y);
+                        x1 = x1.max(x + 1);
+                        y1 = y1.max(y + 1);
+                    }
+                }
+                if x1 == 0 { (0, 0, 0, 0) } else { (x0, y0, x1, y1) }
+            }).unwrap_or((0, 0, 0, 0)),
             glow,
             stars,
             motes,
@@ -759,13 +779,27 @@ impl Scene {
             cw,
             ch,
             xmap,
+            still_grid: None,
+            still_screen: None,
         }
+    }
+
+    /// True when the grid comes out the same every frame (only GIF frames change it).
+    fn grid_is_still(&self) -> bool {
+        let streaks = ((self.look.wind.clamp(0.0, 1.0) - 0.4).max(0.0) * 14.0) as usize > 0;
+        self.water_from.is_none()
+            && self.look.clouds <= 0.0
+            && self.glints.is_empty()
+            && self.stars.is_empty()
+            && self.logo.is_none()
+            && self.birds.is_empty()
+            && self.motes.is_empty()
+            && !streaks
     }
 
     /// Render the scene at time `t` (seconds) into a screen-sized 0RGB buffer.
     pub fn render(&mut self, t: f32, out: &mut [u32]) {
         let (gw, gh) = (self.gw, self.gh);
-        let tau = std::f32::consts::TAU;
         let unit = gw as f32 / 480.0; // effect sizes are tuned for a 480-wide grid
         // wind speeds things up; 0.3 (the default) is the original pace
         let wind = self.look.wind.clamp(0.0, 1.0);
@@ -775,11 +809,119 @@ impl Scene {
             let idx = self.anim.iter().position(|a| at < a.1).unwrap_or(0);
             if idx != self.anim_frame {
                 self.anim_frame = idx;
+                self.still_grid = None;
+                self.still_screen = None;
                 for (d, s) in self.start.iter_mut().zip(self.anim[idx].0.iter()) {
                     *d = [s[0] as f32, s[1] as f32, s[2] as f32];
                 }
             }
         }
+        let still = self.grid_is_still();
+        // screen cells (cx0, cy0, cx1, cy1) that differ from the cached still picture
+        let mut dirty = None;
+        if let (true, Some(g)) = (still, &self.still_grid) {
+            self.grid.copy_from_slice(g);
+            if let Some(glow) = &self.glow {
+                // only the sun glow breathes: redo just its rectangle (start + glow + stylize)
+                let (x0, y0, x1, y1) = self.glow_box;
+                let k = glow_k(t);
+                let s = self.look.stylize.clamp(0.0, 1.0).powf(0.7);
+                let dstep = self.dither_step * self.look.dither * 2.0;
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let i = y * gw + x;
+                        let mut c = self.start[i];
+                        if glow[i] > 0.0 {
+                            c = mix(c, GLOW, glow[i] * k * 2.0);
+                        }
+                        self.grid[i] = stylize_px(c, x, y, s, dstep, &self.pal, &self.lut);
+                    }
+                }
+                if x1 > x0 && y1 > y0 {
+                    let cs = 8 * ((self.sh as f32 / 540.0).round() as usize).max(1);
+                    let (sw, sh) = (self.sw, self.sh);
+                    dirty = Some((
+                        (x0 * sw / gw / cs).saturating_sub(1),
+                        (y0 * sh / gh / cs).saturating_sub(1),
+                        x1 * sw / gw / cs + 2,
+                        y1 * sh / gh / cs + 2,
+                    ));
+                }
+            }
+        } else {
+            self.build_grid(t, unit, wf, wind);
+            self.still_screen = None;
+            self.still_grid = if still { Some(self.grid.clone()) } else { None };
+        }
+
+        // sparkles: little four-point stars that twinkle in and out, drawn after the palette
+        // so they stay crisp; dark ink on bright ground, warm light on dark ground
+        for k in 0..self.look.sparkles as usize {
+            let life = 1.6 + hash2(k as i64, 2, self.seed + 41) * 2.4;
+            let tt = t + hash2(k as i64, 3, self.seed + 41) * life;
+            let cyc = (tt / life).floor() as i64;
+            let b = ((tt / life).fract() * std::f32::consts::PI).sin().powi(3);
+            let x = (hash2(k as i64, cyc, self.seed + 42) * gw as f32) as i64;
+            let y = (hash2(k as i64, cyc, self.seed + 43) * gh as f32) as i64;
+            let arm = ((1.0 + b * 2.0) * unit.max(1.0)).round() as i64;
+            let s = unit.max(1.0).round() as i64;
+            if x < 0 || y < 0 || x as usize >= gw || y as usize >= gh {
+                continue;
+            }
+            let ground = unpack(self.grid[y as usize * gw + x as usize]);
+            let col = if lum(ground) > 190.0 { [217.0, 119.0, 87.0] } else { [255.0, 244.0, 214.0] };
+            for d in -arm..=arm {
+                let a = if d == 0 { b } else { b * (1.0 - d.abs() as f32 / (arm + 1) as f32) };
+                for (px, py) in [(x + d * s, y), (x, y + d * s)] {
+                    for sy in 0..s {
+                        for sx in 0..s {
+                            let (qx, qy) = (px + sx, py + sy);
+                            if qx >= 0 && qy >= 0 && (qx as usize) < gw && (qy as usize) < gh {
+                                let i = qy as usize * gw + qx as usize;
+                                self.grid[i] = pack(mix(unpack(self.grid[i]), col, a));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let (base, glitch) = (self.look.ascii.clamp(0.0, 1.0), self.look.glitch.clamp(0.0, 1.0));
+        if base > 0.001 {
+            // every screen pixel is redrawn as text, straight from the grid
+            if still && self.look.sparkles == 0 {
+                // the text picture only changes where glitches flicker: draw it once, reuse it
+                if self.still_screen.is_none() {
+                    let mut buf = vec![0u32; out.len()];
+                    self.ascii(&mut buf, t, true, base, 0.0);
+                    self.still_screen = Some(buf);
+                }
+                out.copy_from_slice(self.still_screen.as_ref().unwrap());
+                if let Some(cells) = dirty {
+                    self.ascii_cells(out, t, base, Some(cells));
+                }
+                if glitch > 0.001 {
+                    self.ascii(out, t, false, 0.0, glitch);
+                }
+            } else {
+                self.ascii(out, t, true, base, glitch);
+            }
+        } else {
+            self.upscale(out);
+            if glitch > 0.001 {
+                self.ascii(out, t, false, 0.0, glitch);
+            }
+        }
+        if self.look.breakthrough > 0.001 {
+            self.breakthrough(out, t);
+        }
+    }
+
+    /// Everything that happens on the grid before sparkles: moving water, clouds, glow, stars,
+    /// logo, birds, dust, wind streaks, then the stylized palette into `self.grid`.
+    fn build_grid(&mut self, t: f32, unit: f32, wf: f32, wind: f32) {
+        let (gw, gh) = (self.gw, self.gh);
+        let tau = std::f32::consts::TAU;
         self.work.copy_from_slice(&self.start);
 
         // water: each row slides sideways on slow sine waves, deeper rows move more
@@ -848,12 +990,16 @@ impl Scene {
 
         // breathing glow around the sun / brightest light
         if let Some(g) = &self.glow {
-            let k = 0.10 + 0.05 * (tau * t / 6.0).sin();
-            self.work.par_iter_mut().zip(g.par_iter()).for_each(|(px, &gv)| {
-                if gv > 0.0 {
-                    *px = mix(*px, [255.0, 236.0, 200.0], gv * k * 2.0);
+            let k = glow_k(t);
+            let (x0, y0, x1, y1) = self.glow_box;
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let (i, gv) = (y * gw + x, g[y * gw + x]);
+                    if gv > 0.0 {
+                        self.work[i] = mix(self.work[i], GLOW, gv * k * 2.0);
+                    }
                 }
-            });
+            }
         }
 
         // glints on water
@@ -984,58 +1130,12 @@ impl Scene {
         let dstep = self.dither_step * self.look.dither * 2.0;
         let (pal, lut, work) = (&self.pal, &self.lut, &self.work);
         self.grid.par_chunks_mut(gw).enumerate().for_each(|(y, row)| {
-            for (x, o) in row.iter_mut().enumerate() {
-                let c = work[y * gw + x];
-                if s <= 0.001 {
-                    *o = pack(c);
-                    continue;
-                }
-                let d = bayer(x, y) * dstep;
-                let q = |v: f32| (((v + d).clamp(0.0, 255.0)) as usize >> 3).min(31);
-                let p = pal[lut[(q(c[0]) << 10) | (q(c[1]) << 5) | q(c[2])] as usize];
-                *o = pack(mix(c, p, s));
+            let src = &work[y * gw..(y + 1) * gw];
+            for (x, (o, &c)) in row.iter_mut().zip(src).enumerate() {
+                *o = stylize_px(c, x, y, s, dstep, pal, lut);
             }
         });
 
-        // sparkles: little four-point stars that twinkle in and out, drawn after the palette
-        // so they stay crisp; dark ink on bright ground, warm light on dark ground
-        for k in 0..self.look.sparkles as usize {
-            let life = 1.6 + hash2(k as i64, 2, self.seed + 41) * 2.4;
-            let tt = t + hash2(k as i64, 3, self.seed + 41) * life;
-            let cyc = (tt / life).floor() as i64;
-            let b = ((tt / life).fract() * std::f32::consts::PI).sin().powi(3);
-            let x = (hash2(k as i64, cyc, self.seed + 42) * gw as f32) as i64;
-            let y = (hash2(k as i64, cyc, self.seed + 43) * gh as f32) as i64;
-            let arm = ((1.0 + b * 2.0) * unit.max(1.0)).round() as i64;
-            let s = unit.max(1.0).round() as i64;
-            if x < 0 || y < 0 || x as usize >= gw || y as usize >= gh {
-                continue;
-            }
-            let ground = unpack(self.grid[y as usize * gw + x as usize]);
-            let col = if lum(ground) > 190.0 { [217.0, 119.0, 87.0] } else { [255.0, 244.0, 214.0] };
-            for d in -arm..=arm {
-                let a = if d == 0 { b } else { b * (1.0 - d.abs() as f32 / (arm + 1) as f32) };
-                for (px, py) in [(x + d * s, y), (x, y + d * s)] {
-                    for sy in 0..s {
-                        for sx in 0..s {
-                            let (qx, qy) = (px + sx, py + sy);
-                            if qx >= 0 && qy >= 0 && (qx as usize) < gw && (qy as usize) < gh {
-                                let i = qy as usize * gw + qx as usize;
-                                self.grid[i] = pack(mix(unpack(self.grid[i]), col, a));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        self.upscale(out);
-        if self.look.ascii > 0.001 || self.look.glitch > 0.001 {
-            self.ascii(out, t);
-        }
-        if self.look.breakthrough > 0.001 {
-            self.breakthrough(out, t);
-        }
     }
 
     /// "The code breaking through": every so often the picture tears along a band, rows slide
@@ -1144,11 +1244,21 @@ impl Scene {
     fn upscale(&self, out: &mut [u32]) {
         let (sw, sh, gw, gh) = (self.sw, self.sh, self.gw, self.gh);
         let (grid, xmap) = (&self.grid, &self.xmap);
-        out.par_chunks_mut(sw).enumerate().for_each(|(y, row)| {
-            let gy = (y * gh / sh).min(gh - 1);
-            let src = &grid[gy * gw..(gy + 1) * gw];
-            for (x, o) in row.iter_mut().enumerate() {
-                *o = src[xmap[x]];
+        // bands of 16 rows; a row showing the same grid row as the one above is copied
+        out.par_chunks_mut(sw * 16).enumerate().for_each(|(b, band)| {
+            let mut prev = usize::MAX;
+            for r in 0..band.len() / sw {
+                let y = b * 16 + r;
+                let gy = (y * gh / sh).min(gh - 1);
+                if gy == prev {
+                    band.copy_within((r - 1) * sw..r * sw, r * sw);
+                    continue;
+                }
+                prev = gy;
+                let src = &grid[gy * gw..(gy + 1) * gw];
+                for (o, &xi) in band[r * sw..(r + 1) * sw].iter_mut().zip(xmap.iter()) {
+                    *o = src[xi];
+                }
             }
         });
     }
@@ -1157,22 +1267,35 @@ impl Scene {
     /// cell's own colour on a dark ground. The ASCII amount fades from the picture to the text.
     /// Glitches: now and then a short run of cells flickers into random characters for a
     /// fraction of a second, whatever the ASCII amount.
-    fn ascii(&self, out: &mut [u32], t: f32) {
+    /// With `from_grid` the picture underneath is read from the grid (no upscale pass needed);
+    /// otherwise from `out`, which already holds the upscaled picture.
+    fn ascii(&self, out: &mut [u32], t: f32, from_grid: bool, base: f32, glitch: f32) {
+        self.ascii_in(out, t, from_grid, base, glitch, None)
+    }
+
+    /// Redraw only the text cells in `cells` (from the grid, no glitches).
+    fn ascii_cells(&self, out: &mut [u32], t: f32, base: f32, cells: Option<(usize, usize, usize, usize)>) {
+        self.ascii_in(out, t, true, base, 0.0, cells)
+    }
+
+    fn ascii_in(&self, out: &mut [u32], t: f32, from_grid: bool, base: f32, glitch: f32, cells: Option<(usize, usize, usize, usize)>) {
+        let (ccx0, ccy0, ccx1, ccy1) = cells.unwrap_or((0, 0, usize::MAX, usize::MAX));
         let (sw, sh) = (self.sw, self.sh);
         let f = ((sh as f32 / 540.0).round() as usize).max(1);
         let cs = 8 * f;
-        let base = self.look.ascii.clamp(0.0, 1.0);
-        let glitch = self.look.glitch.clamp(0.0, 1.0);
         let tick = (t * 9.0).floor() as i64;
         let seed = self.seed;
-        let (grid, gw, gh) = (&self.grid, self.gw, self.gh);
+        let (grid, gw, gh, xmap) = (&self.grid, self.gw, self.gh, &self.xmap);
         out.par_chunks_mut(sw * cs).enumerate().for_each(|(cy, band)| {
+            if cy < ccy0 || cy >= ccy1 {
+                return;
+            }
             let rows = band.len() / sw;
             // one glitch decision per row per tick: a run starting somewhere along it
             let g_on = glitch > 0.0 && hash2(cy as i64, tick, seed + 51) < glitch * glitch * 0.18;
             let g_start = (hash2(cy as i64, tick, seed + 52) * sw.div_ceil(cs) as f32) as usize;
             let g_len = 2 + (hash2(cy as i64, tick, seed + 53) * 10.0 * (0.4 + glitch)) as usize;
-            for cx in 0..sw.div_ceil(cs) {
+            for cx in ccx0..sw.div_ceil(cs).min(ccx1) {
                 let glitched = g_on && cx >= g_start && cx < g_start + g_len;
                 let k = if glitched { 1.0 } else { base };
                 if k <= 0.001 {
@@ -1191,21 +1314,76 @@ impl Scene {
                 let glyph = font8x8::legacy::BASIC_LEGACY[ch as usize];
                 let bg = [c[0] * 0.14, c[1] * 0.14, c[2] * 0.14];
                 let fg = [c[0] * 1.2 + 24.0, c[1] * 1.2 + 24.0, c[2] * 1.2 + 24.0];
+                let (fg_px, bg_px) = (pack(fg), pack(bg));
+                let x_end = ((cx + 1) * cs).min(sw);
                 for ry in 0..rows {
                     let bits = glyph[(ry / f).min(7)];
-                    let row = &mut band[ry * sw..(ry + 1) * sw];
-                    for rx in 0..cs {
-                        let x = cx * cs + rx;
-                        if x >= sw {
-                            break;
+                    if k >= 0.999 {
+                        let row = &mut band[ry * sw + cx * cs..ry * sw + x_end];
+                        for (rx, px) in row.iter_mut().enumerate() {
+                            *px = if (bits >> (rx / f)) & 1 == 1 { fg_px } else { bg_px };
                         }
-                        let t = if (bits >> (rx / f)) & 1 == 1 { fg } else { bg };
-                        row[x] = if k >= 0.999 { pack(t) } else { pack(mix(unpack(row[x]), t, k)) };
+                        continue;
+                    }
+                    // the picture underneath is upscaled pixel art, so neighbouring pixels
+                    // usually repeat: blend each distinct (colour, ink) pair only once
+                    let mut last = (u32::MAX, false, 0u32);
+                    if from_grid {
+                        let y = cy * cs + ry;
+                        let gy = (y * gh / sh).min(gh - 1);
+                        // a screen row identical to the one above (same grid row, same glyph
+                        // row) is just copied
+                        if ry > 0 && gy == ((y - 1) * gh / sh).min(gh - 1) && bits == glyph[((ry - 1) / f).min(7)] {
+                            let a = (ry - 1) * sw + cx * cs;
+                            band.copy_within(a..a + (x_end - cx * cs), ry * sw + cx * cs);
+                            continue;
+                        }
+                        let src = &grid[gy * gw..(gy + 1) * gw];
+                        let row = &mut band[ry * sw + cx * cs..ry * sw + x_end];
+                        for (rx, px) in row.iter_mut().enumerate() {
+                            let ink = (bits >> (rx / f)) & 1 == 1;
+                            let under = src[xmap[cx * cs + rx]];
+                            if under != last.0 || ink != last.1 {
+                                let t = if ink { fg } else { bg };
+                                last = (under, ink, pack(mix(unpack(under), t, k)));
+                            }
+                            *px = last.2;
+                        }
+                        continue;
+                    }
+                    let row = &mut band[ry * sw + cx * cs..ry * sw + x_end];
+                    for (rx, px) in row.iter_mut().enumerate() {
+                        let ink = (bits >> (rx / f)) & 1 == 1;
+                        if *px != last.0 || ink != last.1 {
+                            let t = if ink { fg } else { bg };
+                            last = (*px, ink, pack(mix(unpack(*px), t, k)));
+                        }
+                        *px = last.2;
                     }
                 }
             }
         });
     }
+}
+
+const GLOW: Rgb = [255.0, 236.0, 200.0];
+
+/// Strength of the breathing sun glow at time `t`.
+#[inline]
+fn glow_k(t: f32) -> f32 {
+    0.10 + 0.05 * (std::f32::consts::TAU * t / 6.0).sin()
+}
+
+/// One grid pixel snapped toward the dithered palette by `s` (0 = untouched).
+#[inline]
+fn stylize_px(c: Rgb, x: usize, y: usize, s: f32, dstep: f32, pal: &[Rgb], lut: &[u8]) -> u32 {
+    if s <= 0.001 {
+        return pack(c);
+    }
+    let d = bayer(x, y) * dstep;
+    let q = |v: f32| (((v + d).clamp(0.0, 255.0)) as usize >> 3).min(31);
+    let p = pal[lut[(q(c[0]) << 10) | (q(c[1]) << 5) | q(c[2])] as usize];
+    pack(mix(c, p, s))
 }
 
 // ------------------------------------------------------------------ text (for messages)
@@ -1224,6 +1402,79 @@ pub fn draw_text(out: &mut [u32], sw: usize, sh: usize, text: &str, cx: usize, c
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod bench {
+    use super::*;
+    use crate::config::{Logo, Look};
+
+    fn callum_look() -> Look {
+        Look { pixelation: 0.19, ascii: 0.31, stylize: 0.06, colors: 8, dither: 1.03, clouds: 0.0, water: false, stars: false, birds: 0, motes: 0, glitch: 0.25, sparkles: 0, wind: 0.02, breakthrough: 0.25 }
+    }
+
+    pub fn test_source() -> Source {
+        let img = RgbImage::from_fn(1920, 1080, |x, y| image::Rgb([(x * 255 / 1920) as u8, (y * 255 / 1080) as u8, ((x ^ y) & 255) as u8]));
+        Source { img, frames: Vec::new() }
+    }
+
+    /// Render a fixed sequence and hash it, so optimizations can be checked for identical output.
+    pub fn frames_hash(look: &Look, sw: usize, sh: usize, n: usize) -> u64 {
+        let mut sc = Scene::new(&test_source(), None, sw, sh, look, &Logo::default(), 7);
+        let mut out = vec![0u32; sw * sh];
+        let mut h: u64 = 1469598103934665603;
+        for i in 0..n {
+            sc.render(i as f32 * 0.37, &mut out);
+            for &p in &out {
+                h = (h ^ p as u64).wrapping_mul(1099511628211);
+            }
+        }
+        h
+    }
+
+    fn cpu_ms() -> f64 {
+        let s = std::fs::read_to_string("/proc/self/stat").unwrap();
+        let f: Vec<&str> = s.rsplit(')').next().unwrap().split_whitespace().collect();
+        (f[11].parse::<f64>().unwrap() + f[12].parse::<f64>().unwrap()) * 10.0
+    }
+
+    /// The reused still picture must look exactly like drawing every frame from scratch.
+    #[test]
+    fn still_frames_match_full_render() {
+        let (sw, sh) = (640, 400);
+        for look in [callum_look(), Look { sparkles: 5, ..callum_look() }, Look { ascii: 0.0, ..callum_look() }, Look::default()] {
+            let src = test_source();
+            let mut a = Scene::new(&src, None, sw, sh, &look, &Logo::default(), 3);
+            let mut b = Scene::new(&src, None, sw, sh, &look, &Logo::default(), 3);
+            let (mut oa, mut ob) = (vec![0u32; sw * sh], vec![0u32; sw * sh]);
+            for i in 0..30 {
+                let t = i as f32 * 0.29;
+                a.render(t, &mut oa);
+                b.still_grid = None;
+                b.still_screen = None;
+                b.render(t, &mut ob);
+                assert!(oa == ob, "frame {i} differs");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_render() {
+        let (sw, sh) = (2560, 1600);
+        for (name, look) in [("glitch-only", Look { ascii: 0.0, breakthrough: 0.0, ..callum_look() }), ("bt-only", Look { ascii: 0.0, glitch: 0.0, ..callum_look() }), ("callum-noascii", Look { ascii: 0.0, glitch: 0.0, breakthrough: 0.0, ..callum_look() }), ("callum-ascii-only", Look { glitch: 0.0, breakthrough: 0.0, ..callum_look() }), ("callum-ascii1", Look { ascii: 1.0, glitch: 0.0, breakthrough: 0.0, ..callum_look() }), ("callum", callum_look()), ("default", Look::default()), ("all-on", Look { ascii: 0.6, stylize: 1.0, clouds: 0.6, water: true, stars: true, birds: 6, motes: 40, sparkles: 20, wind: 0.7, ..callum_look() })] {
+            let mut sc = Scene::new(&test_source(), None, sw, sh, &look, &Logo::default(), 7);
+            let mut out = vec![0u32; sw * sh];
+            for i in 0..5 { sc.render(i as f32 * 0.016, &mut out); }
+            let n = 120;
+            let c0 = cpu_ms();
+            let t0 = std::time::Instant::now();
+            for i in 0..n { sc.render(i as f32 * 0.016, &mut out); }
+            let ms = t0.elapsed().as_secs_f64() * 1000.0 / n as f64;
+            let cpu = cpu_ms() ;
+            println!("{name}: cpu {:.2} ms/frame, wall {ms:.2} ms/frame ({}x{} grid)  hash {:x}", (cpu - c0) / n as f64, sc.gw, sc.gh, frames_hash(&look, 1280, 800, 40));
         }
     }
 }
