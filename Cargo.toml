@@ -1,6 +1,6 @@
 [package]
 name = "nynex-screensaver"
-version = "0.8.2"
+version = "0.8.3"
 edition = "2021"
 description = "Animated pixel-art / ASCII landscape screensaver for Windows"
 

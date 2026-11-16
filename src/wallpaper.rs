@@ -87,19 +87,23 @@ mod win {
             let flags = SWP_NOACTIVATE | SWP_SHOWWINDOW;
             match layer {
                 Layer::Progman { progman, defview, worker } => {
-                    // Progman is composited (WS_EX_NOREDIRECTIONBITMAP), so a normal child
-                    // never shows up; a layered child does.
-                    let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                    if SetParent(hwnd, progman).is_null() {
+                        return Err(format!("Could not move into the desktop (error {}).", windows_sys::Win32::Foundation::GetLastError()));
+                    }
+                    // Progman is composited (WS_EX_NOREDIRECTIONBITMAP), so a normal child never
+                    // shows up; a layered child does. The order matters: Windows only starts
+                    // composing the child when it becomes layered *after* it is inside Progman,
+                    // followed by a frame change. (Checked on Windows 11 26H2.)
+                    let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & !(WS_EX_LAYERED as isize);
+                    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
+                    SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
                     SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED as isize);
                     if SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA) == 0 {
                         return Err(format!("Windows refused to make the wallpaper visible (error {}).", windows_sys::Win32::Foundation::GetLastError()));
                     }
-                    if SetParent(hwnd, progman).is_null() {
-                        return Err(format!("Could not move into the desktop (error {}).", windows_sys::Win32::Foundation::GetLastError()));
-                    }
                     // below the icons, above the static wallpaper
                     let after = if defview.is_null() { HWND_TOP } else { defview };
-                    SetWindowPos(hwnd, after, x - vx, y - vy, w, h, flags);
+                    SetWindowPos(hwnd, after, x - vx, y - vy, w, h, flags | SWP_FRAMECHANGED);
                     SetWindowPos(worker, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
                     Ok(format!("Attached inside Progman (new desktop) at {},{} {}x{}.", x - vx, y - vy, w, h))
                 }
