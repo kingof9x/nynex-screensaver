@@ -20,6 +20,8 @@ pub enum Mode {
     Preview(isize),
     /// A normal resizable window, for trying it out (`--window`).
     Windowed,
+    /// Behind the desktop icons on every monitor, until told to stop (`--wallpaper`).
+    Wallpaper,
 }
 
 struct Win {
@@ -47,6 +49,7 @@ struct App {
     armed_at: Option<Instant>,
     /// Cursor position on screen when the screensaver armed (Windows).
     cursor_home: Option<(i32, i32)>,
+    last_stop_check: Instant,
 }
 
 /// Pixels the mouse has to travel before the screensaver closes.
@@ -55,7 +58,7 @@ const MOVE_TO_QUIT: f64 = 24.0;
 pub fn run(mode: Mode) {
     let cfg = Config::load();
     let event_loop = EventLoop::new().expect("event loop");
-    let mut app = App { mode, cfg, wins: Vec::new(), started: Instant::now(), next_frame: Instant::now(), armed_at: None, cursor_home: None };
+    let mut app = App { mode, cfg, wins: Vec::new(), started: Instant::now(), next_frame: Instant::now(), armed_at: None, cursor_home: None, last_stop_check: Instant::now() };
     let _ = event_loop.run_app(&mut app);
 }
 
@@ -83,6 +86,14 @@ impl App {
     /// True once input should close the screensaver.
     fn armed(&self) -> bool {
         self.armed_at.map(|t| t.elapsed() > Duration::from_millis(800)).unwrap_or(false)
+    }
+}
+
+fn raw_hwnd(w: &Window) -> Option<isize> {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match w.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+        _ => None,
     }
 }
 
@@ -144,6 +155,32 @@ impl ApplicationHandler for App {
                 if self.wins.is_empty() {
                     let attrs = Window::default_attributes().with_fullscreen(Some(Fullscreen::Borderless(None)));
                     self.add_window(el, attrs, 0);
+                }
+            }
+            Mode::Wallpaper => {
+                let _ = std::fs::remove_file(crate::wallpaper::stop_file());
+                let monitors: Vec<_> = el.available_monitors().collect();
+                for (i, m) in monitors.iter().enumerate() {
+                    let attrs = Window::default_attributes()
+                        .with_title("nynex wallpaper")
+                        .with_decorations(false)
+                        .with_position(m.position())
+                        .with_inner_size(m.size());
+                    self.add_window(el, attrs, i);
+                    if let Some(w) = self.wins.last() {
+                        let (p, s) = (m.position(), m.size());
+                        let attached = raw_hwnd(&w.window).map(|h| crate::wallpaper::attach(h, p.x, p.y, s.width as i32, s.height as i32));
+                        if attached != Some(true) {
+                            // without the desktop layer we'd just be a window covering the
+                            // desktop, so give up and say why
+                            let _ = std::fs::write(
+                                crate::config::app_dir().join("wallpaper.log"),
+                                "Could not find the desktop layer behind the icons, so the wallpaper did not start.\n",
+                            );
+                            el.exit();
+                            return;
+                        }
+                    }
                 }
             }
             Mode::Preview(hwnd) => {
@@ -246,6 +283,16 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        if matches!(self.mode, Mode::Wallpaper) && self.last_stop_check.elapsed() > Duration::from_millis(500) {
+            self.last_stop_check = Instant::now();
+            if crate::wallpaper::stop_file().exists() {
+                let _ = std::fs::remove_file(crate::wallpaper::stop_file());
+                self.wins.clear();
+                crate::wallpaper::restore_desktop();
+                el.exit();
+                return;
+            }
+        }
         if let Mode::Preview(hwnd) = self.mode {
             if !parent_alive(hwnd) {
                 el.exit();

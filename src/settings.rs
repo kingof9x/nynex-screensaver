@@ -38,6 +38,8 @@ struct SettingsApp {
     wait_minutes: u32,
     #[allow(dead_code)]
     is_screensaver: bool,
+    #[allow(dead_code)]
+    wallpaper_autostart: bool,
 }
 
 impl SettingsApp {
@@ -65,11 +67,13 @@ impl SettingsApp {
             status: String::new(),
             wait_minutes: 10,
             is_screensaver: false,
+            wallpaper_autostart: false,
         };
         #[cfg(windows)]
         {
             let (on, mins) = crate::install::status();
             app.is_screensaver = on;
+            app.wallpaper_autostart = crate::wallpaper::starts_with_windows();
             app.wait_minutes = mins;
         }
         app
@@ -262,11 +266,14 @@ impl SettingsApp {
             ui.label("Time per landscape");
             ui.add(egui::Slider::new(&mut c.default_duration, 2.0..=1800.0).logarithmic(true).suffix(" s"));
             ui.end_row();
-            ui.label("");
+            ui.label("Order");
             ui.horizontal(|ui| {
-                ui.checkbox(&mut c.shuffle, "Shuffle");
-                ui.checkbox(&mut c.different_per_monitor, "Different landscape on each monitor");
+                ui.radio_value(&mut c.shuffle, false, "List order").on_hover_text("Plays top to bottom. Use Up and Down in the list to arrange them.");
+                ui.radio_value(&mut c.shuffle, true, "Random");
             });
+            ui.end_row();
+            ui.label("");
+            ui.checkbox(&mut c.different_per_monitor, "Different landscape on each monitor");
             ui.end_row();
 
             ui.strong("Transition");
@@ -466,6 +473,29 @@ impl eframe::App for SettingsApp {
                         self.status = crate::install::turn_off();
                         self.is_screensaver = crate::install::status().0;
                     }
+                }
+                #[cfg(windows)]
+                {
+                    ui.separator();
+                    ui.label("Wallpaper");
+                    if ui.button("Start").on_hover_text("Saves, then plays nynex behind your desktop icons on every monitor.").clicked() {
+                        self.save();
+                        self.status = match crate::wallpaper::start() {
+                            Ok(()) => "Wallpaper started.".into(),
+                            Err(e) => format!("Could not start the wallpaper: {e}"),
+                        };
+                    }
+                    if ui.button("Stop").on_hover_text("Stops the animated wallpaper and brings back your normal one.").clicked() {
+                        crate::wallpaper::stop();
+                        self.status = "Wallpaper stopped.".into();
+                    }
+                    let mut auto = self.wallpaper_autostart;
+                    if ui.checkbox(&mut auto, "Start with Windows").on_hover_text("Starts the animated wallpaper when you sign in.").changed() {
+                        if crate::wallpaper::set_start_with_windows(auto) {
+                            self.wallpaper_autostart = auto;
+                        }
+                    }
+                    ui.separator();
                 }
                 #[cfg(windows)]
                 ui.label(if self.is_screensaver {
