@@ -7,8 +7,14 @@
 //! With no arguments (double-clicking nynex.exe) it opens the nynex app, which is where
 //! everything is set up: landscapes, look, playing it, and making it the screensaver.
 //!
-//! Extra options for trying it out:
+//! Other ways to run it (all platforms unless noted):
 //!   --window                       run in a normal window
+//!   --wallpaper                    live wallpaper on every monitor until stopped
+//!                                  (Windows: behind the desktop icons; Linux: a Wayland
+//!                                  layer-shell surface under all windows)
+//!   --screensaver [--index N] [--app-id ID]
+//!                                  one full-screen window that closes on input; Omarchy's
+//!                                  screensaver hook starts one per monitor
 //!   --render <image> <out.png> [--seconds N] [--size WxH] [--config file.json]
 //!                                  render a single frame to a PNG (no window needed)
 
@@ -17,6 +23,10 @@
 mod config;
 #[cfg(windows)]
 mod install;
+#[cfg(target_os = "linux")]
+mod layer;
+#[cfg(target_os = "linux")]
+mod omarchy;
 mod player;
 mod saver;
 mod scene;
@@ -55,7 +65,21 @@ fn main() {
             }
         }
         "window" => saver::run(saver::Mode::Windowed),
-        "wallpaper" => saver::run(saver::Mode::Wallpaper),
+        "wallpaper" => run_wallpaper(),
+        "screensaver" => {
+            let mut index = 0usize;
+            let mut app_id = "nynex".to_string();
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--index" => index = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(0),
+                    "--app-id" => app_id = args.get(i + 1).cloned().unwrap_or(app_id),
+                    _ => {}
+                }
+                i += 2;
+            }
+            saver::run(saver::Mode::Single { index, app_id })
+        }
         "render" => render_cli(&args[1..]),
         _ => {
             if let Err(e) = settings::run() {
@@ -63,6 +87,21 @@ fn main() {
             }
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn run_wallpaper() {
+    if let Err(e) = layer::run_wallpaper() {
+        let _ = std::fs::create_dir_all(config::app_dir());
+        let _ = std::fs::write(config::app_dir().join("wallpaper.log"), format!("wallpaper did not start: {e}\n"));
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_wallpaper() {
+    saver::run(saver::Mode::Wallpaper)
 }
 
 /// Render one frame of one image to a PNG, using the saved settings (or a given config file).

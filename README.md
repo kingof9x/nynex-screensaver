@@ -1,6 +1,7 @@
 # nynex screensaver
 
-A Windows screensaver that turns your landscape photos into slowly animated pixel-art and ASCII
+A screensaver and live wallpaper for Windows and Linux (Wayland, made for
+[Omarchy](https://omarchy.org)) that turns your landscape photos into slowly animated pixel-art and ASCII
 scenes, in the spirit of the Claude FM stream visuals. Clouds drift, lakes ripple and glint, the sun
 breathes, stars twinkle at night, birds glide past and motes float up. It cycles through your
 landscapes with the transition you pick, and can show a centred logo.
@@ -24,6 +25,28 @@ sign in. It uses some CPU while it runs; lower the frame rate if that matters.
 apply right away; after downloading a new version, click the button again to update that copy.
 
 If something crashes, the details are written to `%APPDATA%\nynex-screensaver\crash.log`.
+
+## Linux and Omarchy
+
+The same `nynex` program runs on Linux. On Omarchy (Arch + Hyprland) the easiest way in is the
+installer in [omarchy-pixelbook-go](https://github.com/kingof9x/omarchy-pixelbook-go/tree/main/nynex),
+which installs `nynex` to `/usr/local/bin`, adds it to the app launcher and hooks it into Omarchy's
+idle screensaver. By hand: download `nynex-linux-x86_64` from the latest release, put it on your
+PATH as `nynex`, and run it.
+
+- **Screensaver:** Omarchy's idle service runs `omarchy-launch-screensaver`. The installer puts a
+  replacement in `/usr/local/bin` (ahead of Omarchy's in `/usr/bin`) that starts
+  `nynex --screensaver --app-id org.omarchy.screensaver` on every monitor, so Omarchy's window
+  rules, lock timer and "screensaver off" toggle all keep working. In the app, **My screensaver**
+  switches between nynex and Omarchy's text screensaver, and **after N min** edits the idle time in
+  `~/.config/omarchy/shell.json`.
+- **Wallpaper:** `nynex --wallpaper` draws on a Wayland layer-shell surface (namespace
+  `nynex-wallpaper`) on every monitor, under all windows and over Omarchy's own background. It only
+  draws when the compositor asks for a frame, at your frame rate, and renders at the monitor's
+  logical size (a HiDPI screen scales it up). **Start at login** adds it to
+  `~/.config/hypr/autostart.lua`. `NYNEX_LAYER=background` puts it on the background layer instead.
+- Settings and images live in `~/.config/nynex-screensaver/`; wallpaper messages go to
+  `wallpaper.log` there.
 
 ## Settings
 
@@ -51,6 +74,8 @@ Settings are stored in `%APPDATA%\nynex-screensaver\config.json`.
 
 ```
 nynex.exe --window                                   # run in a normal window
+nynex --wallpaper                                    # live wallpaper on every monitor
+nynex --screensaver [--index N] [--app-id ID]        # one full-screen window, any input closes it
 nynex.exe --render photo.jpg frame.png --seconds 5   # write one frame to a PNG
 ```
 
@@ -74,7 +99,7 @@ drawn with softbuffer. The settings app uses egui.
 ## Build
 
 ```
-cargo build --release          # target/release/nynex.exe
+cargo build --release          # target/release/nynex.exe (or target/release/nynex on Linux)
 ```
 
 Cross-compiling from Linux works with `rustup target add x86_64-pc-windows-gnu` and MinGW

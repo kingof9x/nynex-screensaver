@@ -15,6 +15,7 @@ pub fn run() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("nynex")
+            .with_app_id("nynex")
             .with_inner_size([1440.0, 880.0])
             .with_min_inner_size([900.0, 600.0]),
         ..Default::default()
@@ -40,6 +41,9 @@ struct SettingsApp {
     is_screensaver: bool,
     #[allow(dead_code)]
     wallpaper_autostart: bool,
+    /// Linux: Omarchy's idle wait in seconds, when it can be changed from here.
+    #[allow(dead_code)]
+    idle_secs: Option<u32>,
 }
 
 impl SettingsApp {
@@ -68,7 +72,17 @@ impl SettingsApp {
             wait_minutes: 10,
             is_screensaver: false,
             wallpaper_autostart: false,
+            idle_secs: None,
         };
+        #[cfg(target_os = "linux")]
+        {
+            app.is_screensaver = crate::omarchy::screensaver_on();
+            app.wallpaper_autostart = crate::omarchy::starts_at_login();
+            app.idle_secs = crate::omarchy::idle_seconds();
+            if let Some(s) = app.idle_secs {
+                app.wait_minutes = (s / 60).max(1);
+            }
+        }
         #[cfg(windows)]
         {
             let (on, mins) = crate::install::status();
@@ -83,6 +97,48 @@ impl SettingsApp {
         match std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg(arg).spawn()) {
             Ok(_) => {}
             Err(e) => self.status = format!("Could not start it: {e}"),
+        }
+    }
+
+    /// Screensaver and wallpaper controls for Linux (Omarchy / Hyprland).
+    #[cfg(target_os = "linux")]
+    fn linux_controls(&mut self, ui: &mut egui::Ui) {
+        use crate::omarchy;
+        ui.separator();
+        if omarchy::hook_installed() {
+            let mut on = self.is_screensaver;
+            if ui.checkbox(&mut on, "My screensaver").on_hover_text("Omarchy starts nynex instead of its text screensaver when the computer is idle.").changed() {
+                self.save();
+                self.status = omarchy::set_screensaver(on);
+                self.is_screensaver = omarchy::screensaver_on();
+            }
+            if self.idle_secs.is_some() {
+                ui.label("after");
+                let r = ui.add(egui::DragValue::new(&mut self.wait_minutes).range(1..=180).suffix(" min"));
+                if r.drag_stopped() || r.lost_focus() {
+                    self.status = omarchy::set_idle_seconds(self.wait_minutes * 60);
+                    self.idle_secs = omarchy::idle_seconds();
+                }
+            }
+        } else {
+            ui.label("Screensaver: run the Omarchy installer to hook it up").on_hover_text(format!("The installer puts {} in place.", omarchy::HOOK));
+        }
+        ui.separator();
+        ui.label("Wallpaper");
+        if ui.button("Start").on_hover_text("Saves, then plays nynex under your windows on every monitor.").clicked() {
+            self.save();
+            self.status = match crate::wallpaper::start() {
+                Ok(()) => "Wallpaper started.".into(),
+                Err(e) => format!("Could not start the wallpaper: {e}"),
+            };
+        }
+        if ui.button("Stop").on_hover_text("Stops the animated wallpaper and shows your normal background again.").clicked() {
+            crate::wallpaper::stop();
+            self.status = "Wallpaper stopped.".into();
+        }
+        let mut auto = self.wallpaper_autostart;
+        if ui.checkbox(&mut auto, "Start at login").on_hover_text("Adds nynex to your Hyprland autostart.").changed() && omarchy::set_start_at_login(auto) {
+            self.wallpaper_autostart = auto;
         }
     }
 
@@ -497,6 +553,8 @@ impl eframe::App for SettingsApp {
                     }
                     ui.separator();
                 }
+                #[cfg(target_os = "linux")]
+                self.linux_controls(ui);
                 #[cfg(windows)]
                 ui.label(if self.is_screensaver {
                     format!("Your screensaver, after {} min idle", self.wait_minutes)
