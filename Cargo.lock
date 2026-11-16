@@ -663,6 +663,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "embed-manifest"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba92c8f4591bf29f89716b45e5f5f56577adbb81426e5620c6e994da7c88bb7a"
+
+[[package]]
 name = "epaint"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1449,10 +1455,11 @@ dependencies = [
 
 [[package]]
 name = "nynex-screensaver"
-version = "0.8.0"
+version = "0.8.2"
 dependencies = [
  "dirs",
  "eframe",
+ "embed-manifest",
  "font8x8",
  "image",
  "rayon",

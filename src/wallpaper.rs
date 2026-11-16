@@ -91,7 +91,9 @@ mod win {
                     // never shows up; a layered child does.
                     let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
                     SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED as isize);
-                    SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+                    if SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA) == 0 {
+                        return Err(format!("Windows refused to make the wallpaper visible (error {}).", windows_sys::Win32::Foundation::GetLastError()));
+                    }
                     if SetParent(hwnd, progman).is_null() {
                         return Err(format!("Could not move into the desktop (error {}).", windows_sys::Win32::Foundation::GetLastError()));
                     }
