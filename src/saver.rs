@@ -169,16 +169,24 @@ impl ApplicationHandler for App {
                     self.add_window(el, attrs, i);
                     if let Some(w) = self.wins.last() {
                         let (p, s) = (m.position(), m.size());
-                        let attached = raw_hwnd(&w.window).map(|h| crate::wallpaper::attach(h, p.x, p.y, s.width as i32, s.height as i32));
-                        if attached != Some(true) {
-                            // without the desktop layer we'd just be a window covering the
-                            // desktop, so give up and say why
-                            let _ = std::fs::write(
-                                crate::config::app_dir().join("wallpaper.log"),
-                                "Could not find the desktop layer behind the icons, so the wallpaper did not start.\n",
-                            );
-                            el.exit();
-                            return;
+                        let result = match raw_hwnd(&w.window) {
+                            Some(h) => crate::wallpaper::attach(h, p.x, p.y, s.width as i32, s.height as i32),
+                            None => Err("No window handle.".into()),
+                        };
+                        let log = crate::config::app_dir().join("wallpaper.log");
+                        match result {
+                            Ok(msg) => {
+                                let mut text = if i == 0 { String::new() } else { std::fs::read_to_string(&log).unwrap_or_default() };
+                                text.push_str(&format!("monitor {}: {}\n", i + 1, msg));
+                                let _ = std::fs::write(&log, text);
+                            }
+                            Err(why) => {
+                                // without the desktop layer we'd just be a window covering the
+                                // desktop, so give up and say why
+                                let _ = std::fs::write(&log, format!("monitor {}: {} The wallpaper did not start.\n", i + 1, why));
+                                el.exit();
+                                return;
+                            }
                         }
                     }
                 }
