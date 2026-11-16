@@ -49,6 +49,8 @@ struct Win {
     screen: (i32, i32, i32, i32),
     /// Wallpaper: hidden behind a maximised or full-screen window, so not worth drawing.
     covered: bool,
+    /// Frames since the whole window was last sent; a full frame goes out now and then anyway.
+    partial_frames: u32,
 }
 
 struct App {
@@ -91,7 +93,7 @@ impl App {
         let (w, h) = (sz.width.max(1), sz.height.max(1));
         let seed = 0x5eed_u32.wrapping_add(index as u32 * 7919).wrapping_add(self.started.elapsed().subsec_nanos());
         let screen = (0, 0, 0, 0);
-        self.wins.push(Win { window, surface, player: None, index, seed, size: (w, h), last: Instant::now(), first_cursor: None, screen, covered: false });
+        self.wins.push(Win { window, surface, player: None, index, seed, size: (w, h), last: Instant::now(), first_cursor: None, screen, covered: false, partial_frames: 0 });
     }
 
     fn quit_on_input(&self) -> bool {
@@ -343,12 +345,33 @@ impl ApplicationHandler for App {
                         return;
                     }
                     if let Ok(mut buf) = w.surface.buffer_mut() {
+                        let mut damage = None;
                         if buf.len() == (ww * hh) as usize {
                             if let Some(p) = &mut w.player {
-                                p.update(dt, &mut buf);
+                                // the buffer still holds our last frame: only redraw what moves
+                                let has_last = buf.age() == 1 && w.partial_frames < 300;
+                                damage = p.update_damage(dt, &mut buf, has_last);
                             }
                         }
-                        let _ = buf.present();
+                        match damage {
+                            Some(rects) => {
+                                w.partial_frames += 1;
+                                let mut rects: Vec<softbuffer::Rect> = rects
+                                    .into_iter()
+                                    .filter_map(|(x, y, rw, rh)| {
+                                        Some(softbuffer::Rect { x: x as u32, y: y as u32, width: NonZeroU32::new(rw as u32)?, height: NonZeroU32::new(rh as u32)? })
+                                    })
+                                    .collect();
+                                if rects.is_empty() {
+                                    rects.push(softbuffer::Rect { x: 0, y: 0, width: NonZeroU32::MIN, height: NonZeroU32::MIN });
+                                }
+                                let _ = buf.present_with_damage(&rects);
+                            }
+                            None => {
+                                w.partial_frames = 0;
+                                let _ = buf.present();
+                            }
+                        }
                     }
                 }
                 if self.armed_at.is_none() && self.wins.iter().all(|w| w.player.is_some()) {
