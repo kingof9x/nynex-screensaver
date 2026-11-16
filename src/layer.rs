@@ -46,6 +46,11 @@ struct Output {
     player: Option<Player>,
     last: Instant,
     buffers: Vec<Buffer>,
+    /// Which frame each buffer in `buffers` holds (0 = unknown).
+    held: Vec<u64>,
+    /// Frames drawn so far, and what changed in the last few (None = everything).
+    frame_no: u64,
+    history: std::collections::VecDeque<(u64, Option<Vec<crate::scene::Rect>>)>,
     scratch: Vec<u32>,
 }
 
@@ -176,6 +181,9 @@ impl State {
             player: None,
             last: Instant::now(),
             buffers: Vec::new(),
+            held: Vec::new(),
+            frame_no: 0,
+            history: std::collections::VecDeque::new(),
             scratch: Vec::new(),
         });
     }
@@ -199,22 +207,36 @@ impl State {
         let dt = (now - o.last).as_secs_f32().min(0.25);
         o.last = now;
         let n = (w * h) as usize;
+        // `scratch` is ours alone, so it still holds the last frame unless it was just made
+        let mut has_last = true;
         if o.scratch.len() != n {
             o.scratch = vec![0; n];
+            has_last = false;
         }
-        match &mut o.player {
-            Some(p) => p.update(dt, &mut o.scratch),
+        let damage = match &mut o.player {
+            Some(p) => p.update_damage(dt, &mut o.scratch, has_last),
             None => {
                 // first frame: show black right away, build the scene for the next one
                 o.scratch.fill(0);
                 let offset = if self.cfg.different_per_monitor { o.index } else { 0 };
                 o.player = Some(Player::new(self.cfg.clone(), w as usize, h as usize, offset, o.seed));
                 o.last = Instant::now();
+                None
             }
+        };
+        o.frame_no += 1;
+        o.history.push_back((o.frame_no, damage.clone()));
+        while o.history.len() > 4 {
+            o.history.pop_front();
         }
         // Reuse a buffer the compositor has released, or make a new one (at most three).
         let stride = w as i32 * 4;
-        o.buffers.retain(|b| b.height() == h as i32 && b.stride() == stride);
+        let keep: Vec<bool> = o.buffers.iter().map(|b| b.height() == h as i32 && b.stride() == stride).collect();
+        let mut it = keep.iter();
+        o.buffers.retain(|_| *it.next().unwrap());
+        let mut it = keep.iter();
+        o.held.retain(|_| *it.next().unwrap_or(&false));
+        o.held.resize(o.buffers.len(), 0);
         let mut slot = None;
         for (k, b) in o.buffers.iter_mut().enumerate() {
             if b.canvas(&mut self.pool).is_some() {
@@ -227,6 +249,7 @@ impl State {
             None if o.buffers.len() < 3 => match self.pool.create_buffer(w as i32, h as i32, stride, wl_shm::Format::Xrgb8888) {
                 Ok((b, _)) => {
                     o.buffers.push(b);
+                    o.held.push(0);
                     o.buffers.len() - 1
                 }
                 Err(e) => {
@@ -236,15 +259,58 @@ impl State {
             },
             None => return, // all busy; try again next frame
         };
+        // What this buffer is missing: every change since the frame it last held, if we still
+        // know them all; otherwise the whole frame.
+        let held = o.held[k];
+        let mut copy: Option<Vec<crate::scene::Rect>> = None;
+        if held > 0 && held + o.history.len() as u64 > o.frame_no {
+            let mut rects = Vec::new();
+            let mut known = true;
+            for (f, d) in &o.history {
+                if *f > held {
+                    match d {
+                        Some(r) => rects.extend_from_slice(r),
+                        None => known = false,
+                    }
+                }
+            }
+            if known {
+                copy = Some(rects);
+            }
+        }
         let buffer = &mut o.buffers[k];
         if let Some(canvas) = buffer.canvas(&mut self.pool) {
             // wl_shm XRGB8888 is little-endian 0x00RRGGBB, the same layout the renderer uses
-            for (dst, src) in canvas.chunks_exact_mut(4).zip(o.scratch.iter()) {
-                dst.copy_from_slice(&src.to_le_bytes());
+            match &copy {
+                Some(rects) => {
+                    for &(x, y, rw, rh) in rects {
+                        for yy in y..(y + rh).min(h as usize) {
+                            let a = yy * w as usize + x;
+                            let b = (a + rw).min((yy + 1) * w as usize);
+                            for (dst, src) in canvas[a * 4..b * 4].chunks_exact_mut(4).zip(o.scratch[a..b].iter()) {
+                                dst.copy_from_slice(&src.to_le_bytes());
+                            }
+                        }
+                    }
+                }
+                None => {
+                    for (dst, src) in canvas.chunks_exact_mut(4).zip(o.scratch.iter()) {
+                        dst.copy_from_slice(&src.to_le_bytes());
+                    }
+                }
             }
         }
+        o.held[k] = o.frame_no;
         let surface = o.layer.wl_surface();
-        surface.damage_buffer(0, 0, w as i32, h as i32);
+        // tell the compositor only what changed since the previous frame
+        match &damage {
+            Some(rects) => {
+                for &(x, y, rw, rh) in rects {
+                    surface.damage_buffer(x as i32, y as i32, rw as i32, rh as i32);
+                }
+            }
+            None => surface.damage_buffer(0, 0, w as i32, h as i32),
+        }
         surface.frame(qh, surface.clone());
         if buffer.attach_to(surface).is_ok() {
             o.wants_frame = false;

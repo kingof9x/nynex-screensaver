@@ -2,7 +2,7 @@
 //! background, and blends between them with the chosen transition.
 
 use crate::config::{Config, Landscape, TransitionKind};
-use crate::scene::{draw_text, hash2, load_logo, load_source, LogoArt, Scene};
+use crate::scene::{draw_text, hash2, load_logo, load_source, LogoArt, Rect, Scene};
 use rayon::prelude::*;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
@@ -25,6 +25,8 @@ pub struct Player {
     buf_b: Vec<u32>,
     seed: u32,
     error: Option<String>,
+    /// The last frame handed out was drawn by `cur` alone (no transition, no message).
+    cur_drew_last: bool,
 }
 
 fn shuffled(n: usize, seed: u32) -> Vec<usize> {
@@ -60,6 +62,7 @@ impl Player {
             buf_b: vec![0; sw * sh],
             seed,
             error: None,
+            cur_drew_last: false,
         };
         if !p.list.is_empty() {
             p.cur = p.build_sync(p.pos);
@@ -138,6 +141,15 @@ impl Player {
     }
 
     pub fn update(&mut self, dt: f32, out: &mut [u32]) {
+        self.update_damage(dt, out, false);
+    }
+
+    /// Draw the next frame into `out`. `out_has_last` says `out` still holds the frame this
+    /// player drew last time; then only changed areas may be redrawn, and they are returned.
+    /// None means the whole frame is new.
+    pub fn update_damage(&mut self, dt: f32, out: &mut [u32], out_has_last: bool) -> Option<Vec<Rect>> {
+        let has_last = out_has_last && self.cur_drew_last;
+        self.cur_drew_last = false;
         self.clock += dt;
         if self.list.is_empty() || self.cur.is_none() {
             out.fill(0x0d0a10);
@@ -148,7 +160,7 @@ impl Player {
             };
             let scale = (self.sh / 360).max(1);
             draw_text(out, self.sw, self.sh, msg, self.sw / 2, self.sh / 2, scale, 0xf6ecdc);
-            return;
+            return None;
         }
 
         if let Some(rx) = &self.loading {
@@ -172,7 +184,9 @@ impl Player {
         let t = self.clock;
         match self.trans {
             None => {
-                self.cur.as_mut().unwrap().render(t, out);
+                let d = self.cur.as_mut().unwrap().render_damage(t, out, has_last);
+                self.cur_drew_last = true;
+                d
             }
             Some((elapsed, kind)) => {
                 let len = self.cfg.transition_secs.max(0.05);
@@ -190,6 +204,7 @@ impl Player {
                 } else {
                     self.trans = Some((elapsed, kind));
                 }
+                None
             }
         }
     }

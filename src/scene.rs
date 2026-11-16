@@ -509,7 +509,12 @@ pub struct Scene {
     still_grid: Option<Vec<u32>>,
     /// Likewise the full-screen ASCII picture (without glitches), when the grid is still.
     still_screen: Option<Vec<u32>>,
+    /// Screen rectangles drawn over the still picture last frame (glow, glitches, tears).
+    last_dirty: Vec<Rect>,
 }
+
+/// A screen rectangle: x, y, width, height in pixels.
+pub type Rect = (usize, usize, usize, usize);
 
 /// Pixel size on screen for a pixelation slider value, at 1080p.
 pub fn pixel_size(pixelation: f32) -> f32 {
@@ -781,6 +786,7 @@ impl Scene {
             xmap,
             still_grid: None,
             still_screen: None,
+            last_dirty: Vec::new(),
         }
     }
 
@@ -799,6 +805,14 @@ impl Scene {
 
     /// Render the scene at time `t` (seconds) into a screen-sized 0RGB buffer.
     pub fn render(&mut self, t: f32, out: &mut [u32]) {
+        self.render_damage(t, out, false);
+    }
+
+    /// Render, given whether `out` still holds this scene's previous frame. Returns the screen
+    /// rectangles that changed, or None when the whole frame should be treated as new.
+    /// When `out` holds the last frame and the picture is still, only the parts that move
+    /// (the sun glow, glitches and code tears) are redrawn.
+    pub fn render_damage(&mut self, t: f32, out: &mut [u32], out_has_last: bool) -> Option<Vec<Rect>> {
         let (gw, gh) = (self.gw, self.gh);
         let unit = gw as f32 / 480.0; // effect sizes are tuned for a 480-wide grid
         // wind speeds things up; 0.3 (the default) is the original pace
@@ -891,18 +905,50 @@ impl Scene {
             // every screen pixel is redrawn as text, straight from the grid
             if still && self.look.sparkles == 0 {
                 // the text picture only changes where glitches flicker: draw it once, reuse it
+                let incremental = out_has_last && self.still_screen.is_some();
                 if self.still_screen.is_none() {
                     let mut buf = vec![0u32; out.len()];
                     self.ascii(&mut buf, t, true, base, 0.0);
                     self.still_screen = Some(buf);
                 }
-                out.copy_from_slice(self.still_screen.as_ref().unwrap());
+                let still_screen = self.still_screen.as_ref().unwrap();
+                let prev = std::mem::take(&mut self.last_dirty);
+                if incremental {
+                    // put back what last frame drew over the still picture
+                    for &(x, y, w, h) in &prev {
+                        for yy in y..y + h {
+                            let a = yy * self.sw + x;
+                            out[a..a + w].copy_from_slice(&still_screen[a..a + w]);
+                        }
+                    }
+                } else {
+                    out.copy_from_slice(still_screen);
+                }
+                let cs = 8 * ((self.sh as f32 / 540.0).round() as usize).max(1);
+                let mut now = Vec::new();
                 if let Some(cells) = dirty {
                     self.ascii_cells(out, t, base, Some(cells));
+                    now.push(self.cell_rect(cells, cs));
                 }
                 if glitch > 0.001 {
                     self.ascii(out, t, false, 0.0, glitch);
+                    let cols = self.sw.div_ceil(cs);
+                    for cy in 0..self.sh.div_ceil(cs) {
+                        if let Some((start, len)) = glitch_run(cy, t, glitch, self.seed, cols) {
+                            now.push(self.cell_rect((start, cy, start + len, cy + 1), cs));
+                        }
+                    }
                 }
+                if self.look.breakthrough > 0.001 {
+                    self.breakthrough(out, t, &mut now);
+                }
+                now.retain(|r| r.2 > 0 && r.3 > 0);
+                self.last_dirty = now.clone();
+                if !incremental {
+                    return None;
+                }
+                now.extend(prev);
+                return Some(now);
             } else {
                 self.ascii(out, t, true, base, glitch);
             }
@@ -913,8 +959,16 @@ impl Scene {
             }
         }
         if self.look.breakthrough > 0.001 {
-            self.breakthrough(out, t);
+            self.breakthrough(out, t, &mut Vec::new());
         }
+        None
+    }
+
+    /// Screen pixels covered by text cells (cx0, cy0, cx1, cy1), end exclusive, clipped.
+    fn cell_rect(&self, (cx0, cy0, cx1, cy1): (usize, usize, usize, usize), cs: usize) -> Rect {
+        let (x0, y0) = ((cx0 * cs).min(self.sw), (cy0 * cs).min(self.sh));
+        let (x1, y1) = ((cx1 * cs).min(self.sw), (cy1 * cs).min(self.sh));
+        (x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))
     }
 
     /// Everything that happens on the grid before sparkles: moving water, clouds, glow, stars,
@@ -1141,7 +1195,7 @@ impl Scene {
     /// "The code breaking through": every so often the picture tears along a band, rows slide
     /// sideways with the colour channels split, and through a ragged crack you see this
     /// program's own source code scrolling past, before the picture heals again.
-    fn breakthrough(&self, out: &mut [u32], t: f32) {
+    fn breakthrough(&self, out: &mut [u32], t: f32, dirty: &mut Vec<Rect>) {
         let (sw, sh) = (self.sw, self.sh);
         let amount = self.look.breakthrough.clamp(0.0, 1.0);
         let f = ((sh as f32 / 540.0).round() as usize).max(1);
@@ -1174,6 +1228,7 @@ impl Scene {
             // 1. tear: rows around the band slide sideways with an RGB split
             let y0 = r0.saturating_sub(1) * cs;
             let y1 = ((r0 + band_rows + 1) * cs).min(sh);
+            dirty.push((0, y0.min(sh), sw, y1.saturating_sub(y0)));
             for y in y0..y1 {
                 let slice = (y / (2 * f)) as i64;
                 let off = ((hash2(slice, tick, seed + 3) - 0.5) * 2.0 * open * (12 + (amount * 40.0) as i64) as f32 * f as f32) as i64;
@@ -1292,9 +1347,10 @@ impl Scene {
             }
             let rows = band.len() / sw;
             // one glitch decision per row per tick: a run starting somewhere along it
-            let g_on = glitch > 0.0 && hash2(cy as i64, tick, seed + 51) < glitch * glitch * 0.18;
-            let g_start = (hash2(cy as i64, tick, seed + 52) * sw.div_ceil(cs) as f32) as usize;
-            let g_len = 2 + (hash2(cy as i64, tick, seed + 53) * 10.0 * (0.4 + glitch)) as usize;
+            let (g_on, g_start, g_len) = match glitch_run(cy, t, glitch, seed, sw.div_ceil(cs)) {
+                Some((a, n)) => (true, a, n),
+                None => (false, 0, 0),
+            };
             for cx in ccx0..sw.div_ceil(cs).min(ccx1) {
                 let glitched = g_on && cx >= g_start && cx < g_start + g_len;
                 let k = if glitched { 1.0 } else { base };
@@ -1372,6 +1428,18 @@ const GLOW: Rgb = [255.0, 236.0, 200.0];
 #[inline]
 fn glow_k(t: f32) -> f32 {
     0.10 + 0.05 * (std::f32::consts::TAU * t / 6.0).sin()
+}
+
+/// The glitch run on text row `cy` at time `t`, if any: (first column, number of columns).
+#[inline]
+fn glitch_run(cy: usize, t: f32, glitch: f32, seed: u32, cols: usize) -> Option<(usize, usize)> {
+    let tick = (t * 9.0).floor() as i64;
+    if !(glitch > 0.0 && hash2(cy as i64, tick, seed + 51) < glitch * glitch * 0.18) {
+        return None;
+    }
+    let start = (hash2(cy as i64, tick, seed + 52) * cols as f32) as usize;
+    let len = 2 + (hash2(cy as i64, tick, seed + 53) * 10.0 * (0.4 + glitch)) as usize;
+    Some((start, len))
 }
 
 /// One grid pixel snapped toward the dithered palette by `s` (0 = untouched).
@@ -1460,6 +1528,35 @@ pub(crate) mod bench {
         }
     }
 
+    /// Redrawing only the changed areas over the previous frame, and copying only those
+    /// areas into a second buffer, must give exactly the full frame every time.
+    #[test]
+    fn partial_frames_match_full_render() {
+        let (sw, sh) = (640, 400);
+        for look in [callum_look(), Look { breakthrough: 1.0, glitch: 1.0, ..callum_look() }, Look::default()] {
+            let src = test_source();
+            let mut a = Scene::new(&src, None, sw, sh, &look, &Logo::default(), 5);
+            let mut b = Scene::new(&src, None, sw, sh, &look, &Logo::default(), 5);
+            let (mut oa, mut ob, mut copy) = (vec![0u32; sw * sh], vec![0u32; sw * sh], vec![0u32; sw * sh]);
+            for i in 0..60 {
+                let t = i as f32 * 0.07;
+                a.render(t, &mut oa);
+                match b.render_damage(t, &mut ob, i > 0) {
+                    None => copy.copy_from_slice(&ob),
+                    Some(rects) => {
+                        for (x, y, w, h) in rects {
+                            for yy in y..y + h {
+                                copy[yy * sw + x..yy * sw + x + w].copy_from_slice(&ob[yy * sw + x..yy * sw + x + w]);
+                            }
+                        }
+                    }
+                }
+                assert!(oa == ob, "frame {i}: redrawn frame differs");
+                assert!(oa == copy, "frame {i}: damage missed a change");
+            }
+        }
+    }
+
     #[test]
     #[ignore]
     fn bench_render() {
@@ -1473,7 +1570,10 @@ pub(crate) mod bench {
             let t0 = std::time::Instant::now();
             for i in 0..n { sc.render(i as f32 * 0.016, &mut out); }
             let ms = t0.elapsed().as_secs_f64() * 1000.0 / n as f64;
-            let cpu = cpu_ms() ;
+            let cpu = cpu_ms();
+            let c1 = cpu_ms();
+            for i in 0..n { sc.render_damage((n + i) as f32 * 0.016, &mut out, true); }
+            println!("  {name} partial redraw: cpu {:.2} ms/frame", (cpu_ms() - c1) / n as f64);
             println!("{name}: cpu {:.2} ms/frame, wall {ms:.2} ms/frame ({}x{} grid)  hash {:x}", (cpu - c0) / n as f64, sc.gw, sc.gh, frames_hash(&look, 1280, 800, 40));
         }
     }
