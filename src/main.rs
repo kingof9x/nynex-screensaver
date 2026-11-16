@@ -35,6 +35,9 @@ fn main() {
         });
         eprintln!("{msg}");
     }));
+    // A few worker threads are plenty for a frame; more just spin and burn CPU between frames.
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 4);
+    let _ = rayon::ThreadPoolBuilder::new().num_threads(threads).build_global();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let first = args.first().map(|s| s.to_ascii_lowercase()).unwrap_or_default();
     // Windows may pass "/p 1234", "/p:1234", "-p 1234" and so on.

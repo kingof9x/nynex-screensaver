@@ -564,6 +564,7 @@ impl eframe::App for SettingsApp {
             });
         });
 
-        ctx.request_repaint_after(Duration::from_secs_f32(1.0 / self.cfg.fps.clamp(10, 60) as f32));
+        // the preview is small, so 30 frames a second is plenty and keeps this window light
+        ctx.request_repaint_after(Duration::from_secs_f32(1.0 / self.cfg.fps.clamp(10, 30) as f32));
     }
 }
