@@ -1,8 +1,8 @@
 [package]
 name = "nynex-screensaver"
-version = "0.8.2"
+version = "0.9.0"
 edition = "2021"
-description = "Animated pixel-art / ASCII landscape screensaver for Windows"
+description = "Animated pixel-art / ASCII landscape screensaver and live wallpaper for Windows and Linux (Wayland / Omarchy)"
 
 [[bin]]
 name = "nynex"
@@ -18,10 +18,15 @@ rfd = "0.18"
 font8x8 = "0.3"
 dirs = "7"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Registry", "Win32_Storage_FileSystem"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay-client-toolkit = { version = "0.19", default-features = false }
+wayland-client = "0.31"
+libc = "0.2"
 
 [profile.release]
 opt-level = 3

@@ -1,5 +1,6 @@
-//! Animated wallpaper: the nynex windows are put behind the desktop icons (inside the
-//! desktop's WorkerW window, the same trick live-wallpaper apps use), one per monitor.
+//! Animated wallpaper. On Windows the nynex windows are put behind the desktop icons (inside
+//! the desktop's WorkerW window, the same trick live-wallpaper apps use), one per monitor.
+//! On Linux it is a Wayland layer-shell surface per monitor (see layer.rs).
 
 use crate::config::app_dir;
 use std::path::PathBuf;
@@ -136,12 +137,16 @@ pub fn attach(_hwnd: isize, _x: i32, _y: i32, _w: i32, _h: i32) -> Result<String
 pub fn restore_desktop() {}
 
 /// Stop any running wallpaper, then start a new one.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn start() -> Result<(), String> {
     stop();
     std::thread::sleep(std::time::Duration::from_millis(1200));
     let _ = std::fs::remove_file(stop_file());
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    if !cfg!(windows) {
+        // installed in a fixed place (/usr/local/bin) on Linux, so no copy is needed
+        return std::process::Command::new(exe).arg("--wallpaper").spawn().map(|_| ()).map_err(|e| e.to_string());
+    }
     let copy = exe_copy();
     let same = std::fs::canonicalize(&exe).ok() == std::fs::canonicalize(&copy).ok();
     if !same {
@@ -155,7 +160,7 @@ pub fn start() -> Result<(), String> {
 }
 
 /// Ask a running wallpaper to close.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn stop() {
     let _ = std::fs::create_dir_all(app_dir());
     let _ = std::fs::write(stop_file(), b"stop");

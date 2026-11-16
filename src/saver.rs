@@ -21,7 +21,17 @@ pub enum Mode {
     /// A normal resizable window, for trying it out (`--window`).
     Windowed,
     /// Behind the desktop icons on every monitor, until told to stop (`--wallpaper`).
+    /// (Linux uses layer.rs for the wallpaper instead.)
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     Wallpaper,
+    /// One full-screen window on whichever monitor the window manager puts it; any input
+    /// exits (`--screensaver`). Omarchy's screensaver launcher starts one per monitor.
+    Single {
+        /// Which landscape to start on when "different per monitor" is on.
+        index: usize,
+        /// Wayland app id / X11 class, so window rules (and Omarchy's idle handling) find it.
+        app_id: String,
+    },
 }
 
 struct Win {
@@ -68,7 +78,7 @@ impl App {
             Ok(w) => Rc::new(w),
             Err(_) => return,
         };
-        if matches!(self.mode, Mode::Full) {
+        if self.quit_on_input() {
             window.set_cursor_visible(false);
         }
         let ctx = Context::new(window.clone()).expect("softbuffer context");
@@ -80,7 +90,7 @@ impl App {
     }
 
     fn quit_on_input(&self) -> bool {
-        matches!(self.mode, Mode::Full)
+        matches!(self.mode, Mode::Full | Mode::Single { .. })
     }
 
     /// True once input should close the screensaver.
@@ -108,6 +118,18 @@ fn cursor_pos() -> Option<(i32, i32)> {
 #[cfg(not(windows))]
 fn cursor_pos() -> Option<(i32, i32)> {
     None
+}
+
+/// Give the window an app id (Wayland) / class (X11) that window rules can match.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn with_app_id(attrs: winit::window::WindowAttributes, app_id: &str) -> winit::window::WindowAttributes {
+    use winit::platform::wayland::WindowAttributesExtWayland;
+    WindowAttributesExtWayland::with_name(attrs, app_id, app_id)
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn with_app_id(attrs: winit::window::WindowAttributes, _app_id: &str) -> winit::window::WindowAttributes {
+    attrs
 }
 
 #[cfg(windows)]
@@ -143,7 +165,7 @@ impl ApplicationHandler for App {
             Mode::Full => {
                 let monitors: Vec<_> = el.available_monitors().collect();
                 for (i, m) in monitors.iter().enumerate() {
-                    let attrs = Window::default_attributes()
+                    let attrs = with_app_id(Window::default_attributes(), "nynex")
                         .with_title("nynex screensaver")
                         .with_decorations(false)
                         .with_window_level(WindowLevel::AlwaysOnTop)
@@ -156,6 +178,14 @@ impl ApplicationHandler for App {
                     let attrs = Window::default_attributes().with_fullscreen(Some(Fullscreen::Borderless(None)));
                     self.add_window(el, attrs, 0);
                 }
+            }
+            Mode::Single { index, ref app_id } => {
+                let app_id = app_id.clone();
+                let attrs = with_app_id(Window::default_attributes(), &app_id)
+                    .with_title("nynex screensaver")
+                    .with_decorations(false)
+                    .with_fullscreen(Some(Fullscreen::Borderless(None)));
+                self.add_window(el, attrs, index);
             }
             Mode::Wallpaper => {
                 let _ = std::fs::remove_file(crate::wallpaper::stop_file());
@@ -209,7 +239,7 @@ impl ApplicationHandler for App {
                 self.add_window(el, attrs, 0);
             }
             Mode::Windowed => {
-                let attrs = Window::default_attributes()
+                let attrs = with_app_id(Window::default_attributes(), "nynex")
                     .with_title("nynex screensaver")
                     .with_inner_size(PhysicalSize::new(1280u32, 720u32));
                 self.add_window(el, attrs, 0);
