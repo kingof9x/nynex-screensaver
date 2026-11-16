@@ -21,6 +21,7 @@ mod player;
 mod saver;
 mod scene;
 mod settings;
+mod wallpaper;
 
 fn main() {
     // A GUI program has no console, so write crashes to a log the user can send us.
@@ -51,6 +52,7 @@ fn main() {
             }
         }
         "window" => saver::run(saver::Mode::Windowed),
+        "wallpaper" => saver::run(saver::Mode::Wallpaper),
         "render" => render_cli(&args[1..]),
         _ => {
             if let Err(e) = settings::run() {

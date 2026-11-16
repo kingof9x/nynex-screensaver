@@ -234,15 +234,64 @@ pub fn import_image(src: &Path) -> std::io::Result<PathBuf> {
     }
     std::fs::create_dir_all(&lib)?;
     let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "landscape".into());
-    let ext = src.extension().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "png".into());
-    let mut dst = lib.join(format!("{stem}.{ext}"));
-    let mut n = 2;
-    while dst.exists() {
-        dst = lib.join(format!("{stem}-{n}.{ext}"));
-        n += 1;
+    let ext = src.extension().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_else(|| "png".into());
+    let unique = |ext: &str| {
+        let mut dst = lib.join(format!("{stem}.{ext}"));
+        let mut n = 2;
+        while dst.exists() {
+            dst = lib.join(format!("{stem}-{n}.{ext}"));
+            n += 1;
+        }
+        dst
+    };
+    // Big stills are stored downscaled: nothing on screen needs more than 4K, and huge photos
+    // are slow to load (or too big to decode with the default limits). GIFs are kept as they
+    // are; their frames are scaled when played.
+    if ext != "gif" {
+        if let Some(img) = decode_unlimited(src) {
+            if img.width().max(img.height()) > MAX_IMPORT_SIDE {
+                let small = img.resize(MAX_IMPORT_SIDE, MAX_IMPORT_SIDE, image::imageops::FilterType::Lanczos3);
+                let dst = unique("jpg");
+                let rgb = image::DynamicImage::ImageRgb8(small.to_rgb8());
+                let file = std::fs::File::create(&dst)?;
+                let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(std::io::BufWriter::new(file), 92);
+                enc.encode_image(&rgb).map_err(std::io::Error::other)?;
+                return Ok(dst);
+            }
+        }
     }
+    let dst = unique(&ext);
     std::fs::copy(src, &dst)?;
     Ok(dst)
 }
 
+/// Longest side kept when importing an image.
+pub const MAX_IMPORT_SIDE: u32 = 3840;
+
+/// Decode an image without the decoder's default memory limits (very large photos).
+pub fn decode_unlimited(path: &Path) -> Option<image::DynamicImage> {
+    let mut r = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
+    r.no_limits();
+    r.decode().ok()
+}
+
 pub const IMAGE_EXTENSIONS: [&str; 8] = ["jpg", "jpeg", "png", "webp", "bmp", "gif", "tif", "tiff"];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn big_images_are_downscaled_on_import() {
+        let dir = std::env::temp_dir().join(format!("nynex-import-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("huge.png");
+        image::RgbImage::from_pixel(5000, 2500, image::Rgb([90, 140, 200])).save(&src).unwrap();
+        let out = import_image(&src).unwrap();
+        let img = image::open(&out).unwrap();
+        assert_eq!((img.width(), img.height()), (3840, 1920));
+        assert_eq!(out.extension().unwrap(), "jpg");
+        let _ = std::fs::remove_file(out);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

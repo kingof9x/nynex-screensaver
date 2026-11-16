@@ -15,6 +15,10 @@ landscapes with the transition you pick, and can show a centred logo.
    whenever the PC is idle that long. **Turn off** stops it. You don't need Windows' own Screen
    Saver Settings.
 
+**Wallpaper → Start** plays nynex as your desktop wallpaper, behind the icons on every monitor,
+and **Stop** brings your normal wallpaper back. Tick **Start with Windows** to start it whenever you
+sign in. It uses some CPU while it runs; lower the frame rate if that matters.
+
 **Use as my screensaver** keeps a copy of the program at
 `%APPDATA%\nynex-screensaver\nynex.scr` for Windows to run. If you change the settings later, they
 apply right away; after downloading a new version, click the button again to update that copy.
@@ -25,10 +29,10 @@ If something crashes, the details are written to `%APPDATA%\nynex-screensaver\cr
 
 | | |
 |---|---|
-| **Landscapes** | Add images or a whole folder (or drop files on the window). Animated GIFs play every frame with their own timing (up to 300 frames). Untick an image to skip it, reorder it, or give it its own display time. Added images are copied to `%APPDATA%\nynex-screensaver\landscapes`. |
+| **Landscapes** | Add images or a whole folder (or drop files on the window). Animated GIFs play every frame with their own timing (up to 300 frames). Untick an image to skip it, reorder it, or give it its own display time. Added images are copied to `%APPDATA%\nynex-screensaver\landscapes`; images bigger than 4K are stored downscaled to 3840 px. |
 | **Own look per image** | Select an image and tick **Give it its own look**: the Look, Motion and Logo sliders then change only that image (the list marks it "own look"). **Use for all images** copies its look to the shared settings. |
 | **Time per landscape** | The default display time, from 2 seconds to 30 minutes. |
-| **Shuffle / different per monitor** | Plays in random order, and shows a different landscape on each screen. |
+| **Order / different per monitor** | List order (arrange with Up and Down) or random, and whether each screen shows a different landscape. |
 | **Transition** | Crossfade, pixel dissolve, wipe, slide, pixelate, fade through black, or random, with its length. |
 | **Pixelation** | From full resolution to big chunky pixels. |
 | **ASCII** | Fades the picture into coloured text characters. |

@@ -146,7 +146,10 @@ pub fn load_source(path: &Path) -> Result<Arc<Source>, String> {
     if let Some((first, _)) = frames.first() {
         return Ok(Arc::new(Source { img: first.clone(), frames }));
     }
-    let img = image::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let img = match crate::config::decode_unlimited(path) {
+        Some(i) => i,
+        None => image::open(path).map_err(|e| format!("{}: {e}", path.display()))?,
+    };
     let img = if img.width() > 2560 || img.height() > 2560 {
         img.resize(2560, 2560, FilterType::Triangle)
     } else {
