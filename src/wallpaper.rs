@@ -39,8 +39,16 @@ mod win {
         1
     }
 
-    /// The window that sits between the desktop background and the icons.
-    pub fn desktop_layer() -> Option<HWND> {
+    /// Where the animated wallpaper goes.
+    pub enum Layer {
+        /// Windows 11 24H2 and later: Progman holds the icons (SHELLDLL_DefView) and the
+        /// static wallpaper (a WorkerW child). We go inside Progman, between the two.
+        Progman { progman: HWND, defview: HWND, worker: HWND },
+        /// Older Windows: a separate top-level WorkerW behind the icons.
+        Worker(HWND),
+    }
+
+    pub fn desktop_layer() -> Option<Layer> {
         unsafe {
             let progman = FindWindowW(wide("Progman").as_ptr(), std::ptr::null());
             if progman.is_null() {
@@ -50,38 +58,58 @@ mod win {
             let mut res = 0usize;
             SendMessageTimeoutW(progman, 0x052C, 0xD, 0x1, SMTO_NORMAL, 1000, &mut res);
             SendMessageTimeoutW(progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, &mut res);
-            // Windows 11 24H2 and later: the layer is a child of Progman
             let child = FindWindowExW(progman, std::ptr::null_mut(), wide("WorkerW").as_ptr(), std::ptr::null());
             if !child.is_null() {
-                return Some(child);
+                let defview = FindWindowExW(progman, std::ptr::null_mut(), wide("SHELLDLL_DefView").as_ptr(), std::ptr::null());
+                return Some(Layer::Progman { progman, defview, worker: child });
             }
-            // older Windows: a separate top-level WorkerW behind the icons
             let mut found: HWND = std::ptr::null_mut();
             EnumWindows(Some(find_worker), &mut found as *mut HWND as LPARAM);
             if found.is_null() {
                 None
             } else {
-                Some(found)
+                Some(Layer::Worker(found))
             }
         }
     }
 
     /// Re-parent `hwnd` into the desktop layer at screen position (x, y) with size (w, h).
-    pub fn attach(hwnd: isize, x: i32, y: i32, w: i32, h: i32) -> bool {
-        let Some(layer) = desktop_layer() else { return false };
+    /// Ok says what was done (for wallpaper.log), Err why it failed.
+    pub fn attach(hwnd: isize, x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
+        let layer = desktop_layer().ok_or("Could not find the desktop layer behind the icons.")?;
         unsafe {
             let hwnd = hwnd as *mut c_void;
             let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
             let style = (style & !((WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU) as isize)) | (WS_CHILD | WS_VISIBLE) as isize;
             SetWindowLongPtrW(hwnd, GWL_STYLE, style);
-            if SetParent(hwnd, layer).is_null() {
-                return false;
-            }
             // child coordinates are relative to the virtual screen's top-left corner
             let (vx, vy) = (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN));
-            SetWindowPos(hwnd, std::ptr::null_mut(), x - vx, y - vy, w, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            let flags = SWP_NOACTIVATE | SWP_SHOWWINDOW;
+            match layer {
+                Layer::Progman { progman, defview, worker } => {
+                    // Progman is composited (WS_EX_NOREDIRECTIONBITMAP), so a normal child
+                    // never shows up; a layered child does.
+                    let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED as isize);
+                    SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+                    if SetParent(hwnd, progman).is_null() {
+                        return Err(format!("Could not move into the desktop (error {}).", windows_sys::Win32::Foundation::GetLastError()));
+                    }
+                    // below the icons, above the static wallpaper
+                    let after = if defview.is_null() { HWND_TOP } else { defview };
+                    SetWindowPos(hwnd, after, x - vx, y - vy, w, h, flags);
+                    SetWindowPos(worker, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                    Ok(format!("Attached inside Progman (new desktop) at {},{} {}x{}.", x - vx, y - vy, w, h))
+                }
+                Layer::Worker(worker) => {
+                    if SetParent(hwnd, worker).is_null() {
+                        return Err(format!("Could not move into the desktop (error {}).", windows_sys::Win32::Foundation::GetLastError()));
+                    }
+                    SetWindowPos(hwnd, std::ptr::null_mut(), x - vx, y - vy, w, h, flags | SWP_NOZORDER);
+                    Ok(format!("Attached to WorkerW (older desktop) at {},{} {}x{}.", x - vx, y - vy, w, h))
+                }
+            }
         }
-        true
     }
 
     /// Repaint the normal wallpaper (after the animated one goes away).
@@ -99,8 +127,8 @@ mod win {
 pub use win::{attach, restore_desktop};
 
 #[cfg(not(windows))]
-pub fn attach(_hwnd: isize, _x: i32, _y: i32, _w: i32, _h: i32) -> bool {
-    false
+pub fn attach(_hwnd: isize, _x: i32, _y: i32, _w: i32, _h: i32) -> Result<String, String> {
+    Err("The wallpaper only works on Windows.".into())
 }
 #[cfg(not(windows))]
 pub fn restore_desktop() {}
