@@ -42,7 +42,14 @@ struct SettingsApp {
 
 impl SettingsApp {
     fn new() -> Self {
-        let cfg = Config::load();
+        let mut cfg = Config::load();
+        // an image with its own look always carries its own logo settings too
+        let shared_logo = cfg.logo.clone();
+        for l in &mut cfg.landscapes {
+            if l.look.is_some() && l.logo.is_none() {
+                l.logo = Some(shared_logo.clone());
+            }
+        }
         let saved = serde_json::to_string(&cfg).unwrap_or_default();
         #[allow(unused_mut)]
         let mut app = SettingsApp {
@@ -98,7 +105,7 @@ impl SettingsApp {
             }
             match import_image(&f) {
                 Ok(p) => {
-                    self.cfg.landscapes.push(crate::config::Landscape { path: p, enabled: true, duration: None });
+                    self.cfg.landscapes.push(crate::config::Landscape { path: p, enabled: true, duration: None, look: None, logo: None });
                     added += 1;
                 }
                 Err(e) => self.status = format!("Could not copy {}: {e}", f.display()),
@@ -178,6 +185,9 @@ impl SettingsApp {
                     let mut name = self.cfg.landscapes[i].name();
                     if missing {
                         name.push_str(" (missing)");
+                    }
+                    if self.cfg.landscapes[i].look.is_some() {
+                        name.push_str("  · own look");
                     }
                     if ui.selectable_label(self.selected == Some(i), name).clicked() {
                         self.selected = Some(i);
@@ -272,94 +282,151 @@ impl SettingsApp {
             ui.add(egui::Slider::new(&mut c.transition_secs, 0.2..=10.0).suffix(" s"));
             ui.end_row();
 
+            ui.label("Frame rate");
+            ui.add(egui::Slider::new(&mut c.fps, 10..=60).suffix(" fps"));
+            ui.end_row();
+        });
+
+        // whose look the sliders below change: the selected image's own, or the shared one
+        ui.add_space(8.0);
+        ui.separator();
+        let sel = self.selected.filter(|&i| i < self.cfg.landscapes.len());
+        if let Some(i) = sel {
+            let name = self.cfg.landscapes[i].name();
+            let mut own = self.cfg.landscapes[i].look.is_some();
+            if ui
+                .checkbox(&mut own, format!("Give \"{name}\" its own look"))
+                .on_hover_text("Its own pixelation, colours, motion and logo. The time per image is set in the list.")
+                .changed()
+            {
+                let (look, logo) = (self.cfg.look.clone(), self.cfg.logo.clone());
+                let l = &mut self.cfg.landscapes[i];
+                if own {
+                    l.look = Some(look);
+                    l.logo = Some(logo);
+                } else {
+                    l.look = None;
+                    l.logo = None;
+                }
+            }
+            if own {
+                ui.horizontal(|ui| {
+                    ui.weak("The sliders below change only this image.");
+                    if ui.small_button("Use for all images").on_hover_text("Copies this look to the shared settings.").clicked() {
+                        let l = &self.cfg.landscapes[i];
+                        if let Some(look) = &l.look {
+                            self.cfg.look = look.clone();
+                        }
+                        if let Some(logo) = &l.logo {
+                            self.cfg.logo = logo.clone();
+                        }
+                    }
+                });
+            } else {
+                ui.weak("The sliders below change every image that doesn't have its own look.");
+            }
+        } else {
+            ui.weak("Shared look for every image.");
+        }
+        ui.add_space(4.0);
+        let shared_logo = self.cfg.logo.clone();
+        let (look, logo) = match sel {
+            Some(i) if self.cfg.landscapes[i].look.is_some() => {
+                let l = &mut self.cfg.landscapes[i];
+                (l.look.as_mut().unwrap(), l.logo.get_or_insert(shared_logo))
+            }
+            _ => (&mut self.cfg.look, &mut self.cfg.logo),
+        };
+        look_controls(ui, look, logo);
+    }
+}
+
+fn look_controls(ui: &mut egui::Ui, look: &mut crate::config::Look, logo: &mut crate::config::Logo) {
+    egui::Grid::new("look_controls").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
             ui.strong("Look");
             ui.end_row();
             ui.label("Pixelation");
-            let px = pixel_size(c.look.pixelation);
-            ui.add(egui::Slider::new(&mut c.look.pixelation, 0.0..=1.0).show_value(false))
+            let px = pixel_size(look.pixelation);
+            ui.add(egui::Slider::new(&mut look.pixelation, 0.0..=1.0).show_value(false))
                 .on_hover_text("Left: full resolution. Right: big chunky pixels.");
             ui.end_row();
             ui.label("");
             ui.weak(if px < 1.5 { "full resolution".to_string() } else { format!("{px:.0} px blocks at 1080p") });
             ui.end_row();
             ui.label("ASCII");
-            ui.add(egui::Slider::new(&mut c.look.ascii, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)))
+            ui.add(egui::Slider::new(&mut look.ascii, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)))
                 .on_hover_text("How much of the screen is drawn as text characters.");
             ui.end_row();
             ui.label("Full colour <-> Stylized");
-            ui.add(egui::Slider::new(&mut c.look.stylize, 0.0..=1.0).show_value(false))
+            ui.add(egui::Slider::new(&mut look.stylize, 0.0..=1.0).show_value(false))
                 .on_hover_text("Left: the photo's own colours. Right: warm, limited, dithered palette in the Claude FM style.");
             ui.end_row();
             ui.label("Palette colours");
-            ui.add(egui::Slider::new(&mut c.look.colors, 4..=48));
+            ui.add(egui::Slider::new(&mut look.colors, 4..=48));
             ui.end_row();
             ui.label("Dither");
-            ui.add(egui::Slider::new(&mut c.look.dither, 0.0..=1.5));
+            ui.add(egui::Slider::new(&mut look.dither, 0.0..=1.5));
             ui.end_row();
 
             ui.strong("Motion");
             ui.end_row();
             ui.label("Clouds");
-            ui.add(egui::Slider::new(&mut c.look.clouds, 0.0..=1.0));
+            ui.add(egui::Slider::new(&mut look.clouds, 0.0..=1.0));
             ui.end_row();
             ui.label("Birds");
-            ui.add(egui::Slider::new(&mut c.look.birds, 0..=12));
+            ui.add(egui::Slider::new(&mut look.birds, 0..=12));
             ui.end_row();
             ui.label("Dust / fireflies");
-            ui.add(egui::Slider::new(&mut c.look.motes, 0..=80));
+            ui.add(egui::Slider::new(&mut look.motes, 0..=80));
             ui.end_row();
             ui.label("Sparkles");
-            ui.add(egui::Slider::new(&mut c.look.sparkles, 0..=60));
+            ui.add(egui::Slider::new(&mut look.sparkles, 0..=60));
             ui.end_row();
             ui.label("Wind");
-            ui.add(egui::Slider::new(&mut c.look.wind, 0.0..=1.0));
+            ui.add(egui::Slider::new(&mut look.wind, 0.0..=1.0));
             ui.end_row();
             ui.label("ASCII glitches");
-            ui.add(egui::Slider::new(&mut c.look.glitch, 0.0..=1.0));
+            ui.add(egui::Slider::new(&mut look.glitch, 0.0..=1.0));
             ui.end_row();
             ui.label("Code breaking through");
-            ui.add(egui::Slider::new(&mut c.look.breakthrough, 0.0..=1.0));
+            ui.add(egui::Slider::new(&mut look.breakthrough, 0.0..=1.0));
             ui.end_row();
             ui.label("");
             ui.horizontal(|ui| {
-                ui.checkbox(&mut c.look.water, "Ripple lakes");
-                ui.checkbox(&mut c.look.stars, "Stars at night");
+                ui.checkbox(&mut look.water, "Ripple lakes");
+                ui.checkbox(&mut look.stars, "Stars at night");
             });
-            ui.end_row();
-            ui.label("Frame rate");
-            ui.add(egui::Slider::new(&mut c.fps, 10..=60).suffix(" fps"));
             ui.end_row();
 
             ui.strong("Logo");
             ui.end_row();
             ui.label("");
-            ui.checkbox(&mut c.logo.enabled, "Show a centred logo");
+            ui.checkbox(&mut logo.enabled, "Show a centred logo");
             ui.end_row();
             ui.label("Image");
             ui.horizontal(|ui| {
                 if ui.button("Choose…").clicked() {
                     if let Some(f) = rfd::FileDialog::new().add_filter("Images", &IMAGE_EXTENSIONS).pick_file() {
-                        c.logo.path = import_image(&f).ok().or(Some(f));
-                        c.logo.enabled = true;
+                        logo.path = import_image(&f).ok().or(Some(f));
+                        logo.enabled = true;
                     }
                 }
-                ui.weak(c.logo.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "none".into()));
+                ui.weak(logo.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "none".into()));
             });
             ui.end_row();
             ui.label("Size");
-            ui.add(egui::Slider::new(&mut c.logo.size, 0.05..=0.9).custom_formatter(|v, _| format!("{:.0}% of height", v * 100.0)));
+            ui.add(egui::Slider::new(&mut logo.size, 0.05..=0.9).custom_formatter(|v, _| format!("{:.0}% of height", v * 100.0)));
             ui.end_row();
             ui.label("Opacity");
-            ui.add(egui::Slider::new(&mut c.logo.opacity, 0.05..=1.0));
+            ui.add(egui::Slider::new(&mut logo.opacity, 0.05..=1.0));
             ui.end_row();
             ui.label("Breathing");
-            ui.add(egui::Slider::new(&mut c.logo.pulse, 0.0..=0.4));
+            ui.add(egui::Slider::new(&mut logo.pulse, 0.0..=0.4));
             ui.end_row();
             ui.label("");
-            ui.checkbox(&mut c.logo.outline, "Darker rim (helps on bright skies)");
+            ui.checkbox(&mut logo.outline, "Darker rim (helps on bright skies)");
             ui.end_row();
         });
-    }
 }
 
 impl eframe::App for SettingsApp {

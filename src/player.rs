@@ -41,7 +41,7 @@ impl Player {
     pub fn new(cfg: Config, sw: usize, sh: usize, offset: usize, seed: u32) -> Player {
         let list = cfg.enabled();
         let order = if cfg.shuffle { shuffled(list.len(), seed) } else { (0..list.len()).collect() };
-        let logo = if cfg.logo.enabled { cfg.logo.path.as_deref().and_then(load_logo) } else { None };
+        let logo = cfg.logo.path.as_deref().and_then(load_logo);
         let mut p = Player {
             pos: if list.is_empty() { 0 } else { offset % list.len() },
             cfg,
@@ -72,10 +72,24 @@ impl Player {
         self.list[self.order[pos % self.order.len()]].clone()
     }
 
+    /// Logo artwork for an image: the shared one, unless the image's own settings pick another.
+    fn logo_art_for(&self, l: &Landscape) -> Option<Arc<LogoArt>> {
+        let lc = self.cfg.logo_of(l);
+        if !lc.enabled {
+            return None;
+        }
+        if lc.path == self.cfg.logo.path && self.logo.is_some() {
+            return self.logo.clone();
+        }
+        lc.path.as_deref().and_then(load_logo)
+    }
+
     fn build_sync(&mut self, pos: usize) -> Option<Scene> {
         let l = self.landscape_at(pos);
+        let art = self.logo_art_for(&l);
+        let (look, logo_cfg) = (self.cfg.look_of(&l).clone(), self.cfg.logo_of(&l).clone());
         match load_source(&l.path) {
-            Ok(src) => Some(Scene::new(&src, self.logo.as_deref(), self.sw, self.sh, &self.cfg.look, &self.cfg.logo, self.seed)),
+            Ok(src) => Some(Scene::new(&src, art.as_deref(), self.sw, self.sh, &look, &logo_cfg, self.seed)),
             Err(e) => {
                 self.error = Some(e);
                 None
@@ -90,8 +104,14 @@ impl Player {
         }
         let l = self.landscape_at(pos);
         let (tx, rx) = channel();
-        let (look, logo_cfg, logo, sw, sh, seed) =
-            (self.cfg.look.clone(), self.cfg.logo.clone(), self.logo.clone(), self.sw, self.sh, self.seed.wrapping_add(pos as u32));
+        let (look, logo_cfg, logo, sw, sh, seed) = (
+            self.cfg.look_of(&l).clone(),
+            self.cfg.logo_of(&l).clone(),
+            self.logo_art_for(&l),
+            self.sw,
+            self.sh,
+            self.seed.wrapping_add(pos as u32),
+        );
         std::thread::spawn(move || {
             let scene = load_source(&l.path).ok().map(|src| Scene::new(&src, logo.as_deref(), sw, sh, &look, &logo_cfg, seed));
             let _ = tx.send(scene);

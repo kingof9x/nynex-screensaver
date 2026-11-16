@@ -46,6 +46,12 @@ pub struct Landscape {
     /// Seconds on screen; `None` uses the global default.
     #[serde(default)]
     pub duration: Option<f32>,
+    /// This image's own look and motion settings; `None` uses the shared ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub look: Option<Look>,
+    /// This image's own logo settings (set together with `look`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<Logo>,
 }
 
 impl Landscape {
@@ -205,6 +211,18 @@ impl Config {
 
     pub fn duration_of(&self, l: &Landscape) -> f32 {
         l.duration.unwrap_or(self.default_duration).max(1.0)
+    }
+
+    /// The look an image is shown with: its own if it has one, otherwise the shared one.
+    pub fn look_of<'a>(&'a self, l: &'a Landscape) -> &'a Look {
+        l.look.as_ref().unwrap_or(&self.look)
+    }
+
+    pub fn logo_of<'a>(&'a self, l: &'a Landscape) -> &'a Logo {
+        match (&l.look, &l.logo) {
+            (Some(_), Some(logo)) => logo,
+            _ => &self.logo,
+        }
     }
 }
 

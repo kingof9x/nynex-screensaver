@@ -26,6 +26,7 @@ If something crashes, the details are written to `%APPDATA%\nynex-screensaver\cr
 | | |
 |---|---|
 | **Landscapes** | Add images or a whole folder (or drop files on the window). Animated GIFs play every frame with their own timing (up to 300 frames). Untick an image to skip it, reorder it, or give it its own display time. Added images are copied to `%APPDATA%\nynex-screensaver\landscapes`. |
+| **Own look per image** | Select an image and tick **Give it its own look**: the Look, Motion and Logo sliders then change only that image (the list marks it "own look"). **Use for all images** copies its look to the shared settings. |
 | **Time per landscape** | The default display time, from 2 seconds to 30 minutes. |
 | **Shuffle / different per monitor** | Plays in random order, and shows a different landscape on each screen. |
 | **Transition** | Crossfade, pixel dissolve, wipe, slide, pixelate, fade through black, or random, with its length. |
