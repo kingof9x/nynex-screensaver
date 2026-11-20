@@ -160,3 +160,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.version.outputs.tag }}
         run: gh release upload "$TAG" nynex-linux-x86_64 nynex-screensaver-linux-x86_64.tar.gz --clobber
+
+  build-passed:
+    # One check that sums up the whole build. The repo's "Require passing build" rule
+    # waits for this before the PR can be merged.
+    name: Build passed
+    if: always()
+    needs: [version, build, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check that every build job passed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null
