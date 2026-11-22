@@ -36,3 +36,7 @@ strip = true
 
 [build-dependencies]
 embed-manifest = "1.4"
+
+[profile.dev]
+# Agent sessions and local dev: less debug info = faster compile and link.
+debug = "line-tables-only"
