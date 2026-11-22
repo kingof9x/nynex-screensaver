@@ -135,6 +135,49 @@ impl Player {
         }
     }
 
+    /// Show the previous (`d` = -1) or next (`d` = +1) landscape right away (arrow keys).
+    /// Going forward uses the already-loaded next landscape when it is ready.
+    pub fn step(&mut self, d: isize) {
+        let n = self.order.len();
+        if n == 0 {
+            return;
+        }
+        if self.trans.is_some() {
+            // finish the running transition first; going forward, that's the whole step
+            self.trans = None;
+            if let Some(next) = self.next.take() {
+                self.cur = Some(next);
+                self.pos = (self.pos + 1) % n;
+            }
+            self.shown = 0.0;
+            self.cur_drew_last = false;
+            self.request(self.pos + 1);
+            if d > 0 {
+                return;
+            }
+        }
+        let target = (self.pos as isize + d).rem_euclid(n as isize) as usize;
+        if d > 0 && self.next.is_none() {
+            if let Some(rx) = &self.loading {
+                // wait for the background load rather than loading the same image twice
+                if let Ok(scene) = rx.recv() {
+                    self.next = scene;
+                }
+            }
+        }
+        let scene = match self.next.take() {
+            Some(s) if d > 0 && n > 1 => Some(s),
+            _ => self.build_sync(target),
+        };
+        self.pos = target;
+        self.cur = scene;
+        self.shown = 0.0;
+        self.next = None;
+        self.loading = None;
+        self.cur_drew_last = false;
+        self.request(target + 1);
+    }
+
     /// Skip to the next landscape with a transition (settings preview button).
     pub fn advance(&mut self) {
         self.shown = f32::MAX / 2.0;

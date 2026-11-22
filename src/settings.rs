@@ -305,6 +305,25 @@ impl SettingsApp {
         }
     }
 
+    /// Select the previous (-1) or next (+1) enabled landscape and show it in the preview.
+    fn step_selection(&mut self, d: i32) {
+        let n = self.cfg.landscapes.len();
+        if n == 0 {
+            return;
+        }
+        let mut i = self.selected.unwrap_or(0).min(n - 1);
+        for _ in 0..n {
+            i = (i as i32 + d).rem_euclid(n as i32) as usize;
+            if let Some(e) = self.selected_in_enabled_for(i) {
+                self.selected = Some(i);
+                if let Some(p) = &mut self.preview {
+                    p.jump_to(e);
+                }
+                return;
+            }
+        }
+    }
+
     fn selected_in_enabled_for(&self, sel: usize) -> Option<usize> {
         let l = self.cfg.landscapes.get(sel)?;
         if !l.enabled || !l.path.exists() {
@@ -500,6 +519,14 @@ impl eframe::App for SettingsApp {
             self.add_files(dropped);
         }
         self.refresh_preview();
+        // Left / Right step through the enabled landscapes, unless a slider or text box has
+        // the keyboard
+        if ctx.memory(|m| m.focused().is_none()) {
+            let d = ctx.input(|i| (i.key_pressed(egui::Key::ArrowRight) as i32) - (i.key_pressed(egui::Key::ArrowLeft) as i32));
+            if d != 0 {
+                self.step_selection(d);
+            }
+        }
 
         egui::Panel::top("play").show(ui, |ui| {
             ui.add_space(6.0);

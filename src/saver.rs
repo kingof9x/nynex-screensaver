@@ -68,6 +68,16 @@ struct App {
     last_stop_check: Instant,
 }
 
+/// -1 for the Left arrow, +1 for Right, None for any other key.
+fn arrow_step(key: &winit::keyboard::Key) -> Option<isize> {
+    use winit::keyboard::{Key, NamedKey};
+    match key {
+        Key::Named(NamedKey::ArrowLeft) => Some(-1),
+        Key::Named(NamedKey::ArrowRight) => Some(1),
+        _ => None,
+    }
+}
+
 /// Pixels the mouse has to travel before the screensaver closes.
 const MOVE_TO_QUIT: f64 = 24.0;
 
@@ -293,6 +303,20 @@ impl ApplicationHandler for App {
         let quit = self.quit_on_input() && self.armed();
         match event {
             WindowEvent::CloseRequested | WindowEvent::Destroyed => el.exit(),
+            // Left / Right step through the landscapes (in the window and in the screensaver);
+            // any other key closes the screensaver
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && arrow_step(&event.logical_key).is_some() => {
+                if !event.repeat {
+                    let d = arrow_step(&event.logical_key).unwrap_or(0);
+                    for w in self.wins.iter_mut() {
+                        if let Some(p) = &mut w.player {
+                            p.step(d);
+                        }
+                        w.last = Instant::now();
+                        w.window.request_redraw();
+                    }
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } if quit && event.state == ElementState::Pressed => el.exit(),
             WindowEvent::MouseInput { state: ElementState::Pressed, .. } if quit => el.exit(),
             WindowEvent::MouseWheel { .. } if quit => el.exit(),

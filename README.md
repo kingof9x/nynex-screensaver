@@ -60,10 +60,10 @@ PATH as `nynex`, and run it.
 | **Pixelation** | From full resolution to big chunky pixels. |
 | **ASCII** | Fades the picture into coloured text characters. |
 | **Full colour ↔ Stylized** | From the photo's own colours to the Claude FM look: a high-key, mostly cream-white picture in a small dithered palette, with soft clay, pale blue and pale sage tints. Palette size and dither strength are adjustable. |
-| **Motion** | Cloud amount, birds, dust/fireflies, sparkles, wind (faster clouds and birds, sideways dust, streaks across the sky), ASCII glitches (short runs of cells flickering into characters), code breaking through (the picture tears open and nynex's own source code scrolls through the crack), lake ripples, night stars and frame rate. |
+| **Motion** | Cloud amount, birds, dust/fireflies, sparkles, wind (faster clouds and birds, sideways dust, streaks across the sky), ASCII glitches (short runs of cells flickering into characters), code breaking through (at irregular moments the picture tears open in one of several ways: nynex's own source code, a hex dump or a crash log typing itself out in a torn band, columns of falling code, scattered blocks of code, or the picture itself glitching into posterized, colour-swapped blocks; each break picks one of five colour sets), lake ripples, night stars and frame rate. |
 | **Logo** | Any image shown in the centre: a transparent PNG, or dark artwork on white. Adjust its size, opacity and breathing, and whether it has a darker rim. |
 
-**Next landscape** under the preview plays the transition.
+**Next landscape** under the preview plays the transition. The Left and Right arrow keys step back and forward through the enabled images in the preview, and also in the play window, full screen and the screensaver (where any other key, or moving the mouse, still closes it). The wallpaper takes no keys.
 
 Settings are stored in `%APPDATA%\nynex-screensaver\config.json`.
 
