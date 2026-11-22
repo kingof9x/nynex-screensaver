@@ -43,6 +43,82 @@ fn code_lines() -> &'static [String] {
 
 const ASCII_RAMP: &[u8] = b" .:-=+*#%@";
 
+/// Colour sets for the breakthrough: (text, highlight, background). Claude orange is listed
+/// twice so it stays the most common.
+const BREAK_COLOURS: &[(u32, u32, u32)] = &[
+    (0xd97757, 0xf6ecdc, 0x141413),
+    (0xd97757, 0xf6ecdc, 0x141413),
+    (0x4ade80, 0xd8ffe0, 0x06120a),
+    (0x67e8f9, 0xf0fdff, 0x061418),
+    (0xffb000, 0xfff3c4, 0x161004),
+    (0xe879f9, 0xfde8ff, 0x140616),
+];
+
+/// What one breakthrough looks like right now (shared by its drawing functions).
+struct BreakEvent {
+    k: usize,
+    cyc: i64,
+    seed: u32,
+    f: usize,
+    cs: usize,
+    cols: usize,
+    rows: usize,
+    amount: f32,
+    open: f32,
+    age: f32,
+    tick: i64,
+    colours: (u32, u32, u32),
+}
+
+/// Text shown through a torn band.
+#[derive(Clone, Copy)]
+enum BandText {
+    Source,
+    Hex,
+    Log,
+}
+
+/// One line of a hex dump of the program's source, starting at byte `offset`.
+fn hex_line(offset: usize) -> String {
+    let src = include_str!("scene.rs").as_bytes();
+    let at = offset % src.len().max(1) / 16 * 16;
+    let bytes = &src[at..(at + 16).min(src.len())];
+    let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let ascii: String = bytes.iter().map(|&b| if b.is_ascii_graphic() { b as char } else { '.' }).collect();
+    format!("{at:08x}  {}  |{ascii}|", hex.join(" "))
+}
+
+/// One line of a made-up crash log, pointing at real places in this program's source.
+fn log_line(k: i64, cyc: i64, n: usize, start: usize) -> String {
+    let lines = code_lines();
+    let h = |m: i64| hash2(k * 13 + n as i64, cyc * 7 + m, 0x10c);
+    let file = ["src/scene.rs", "src/player.rs", "src/saver.rs"][(h(1) * 3.0) as usize % 3];
+    let line_no = 40 + (h(2) * 1300.0) as usize;
+    let col = 5 + (h(3) * 40.0) as usize;
+    let addr = 0x7ff6_0000_0000u64 + (h(4) * 4_000_000_000.0) as u64;
+    let stamp = (cyc.rem_euclid(9000) as f32) * 0.731 + n as f32 * 0.0137;
+    let code = lines[(start + n * 5) % lines.len()].trim();
+    let code: String = code.chars().take(48).collect();
+    match (h(5) * 7.0) as usize {
+        0 => format!("thread 'main' panicked at {file}:{line_no}:{col}:"),
+        1 => format!("[{stamp:>10.4}] nynex[{}]: frame dropped at {addr:#x}", 4000 + (h(6) * 900.0) as usize),
+        2 => format!("warning: {file}:{line_no}: {code}"),
+        3 => format!("   {:>2}: 0x{addr:016x} - nynex::scene::Scene::render", n % 24),
+        4 => format!("FATAL: access violation reading {addr:#018x}"),
+        5 => format!("  --> {file}:{line_no}:{col}  | {code}"),
+        _ => format!("[{stamp:>10.4}] {code}"),
+    }
+}
+
+/// Colour `a` faded toward `b` by `t` (0..1).
+fn fade(a: u32, b: u32, t: f32) -> u32 {
+    let t = t.clamp(0.0, 1.0);
+    let ch = |s: u32| -> [f32; 3] { [((s >> 16) & 255) as f32, ((s >> 8) & 255) as f32, (s & 255) as f32] };
+    let (x, y) = (ch(a), ch(b));
+    let m = |i: usize| (x[i] + (y[i] - x[i]) * t) as u32;
+    (m(0) << 16) | (m(1) << 8) | m(2)
+}
+
 #[inline]
 fn bayer(x: usize, y: usize) -> f32 {
     (BAYER4[y & 3][x & 3] + 0.5) / 16.0 - 0.5
@@ -1192,104 +1268,280 @@ impl Scene {
 
     }
 
-    /// "The code breaking through": every so often the picture tears along a band, rows slide
-    /// sideways with the colour channels split, and through a ragged crack you see this
-    /// program's own source code scrolling past, before the picture heals again.
+    /// "The code breaking through": every so often the picture breaks open and you see what
+    /// is underneath. Each break picks one of several looks at random, in one of several
+    /// colour sets, at irregular times:
+    /// - a torn band (rows slide sideways with the colour channels split) with this program's
+    ///   own source scrolling through a ragged crack,
+    /// - the same tear showing a hex dump of the source,
+    /// - a crash log typing itself out,
+    /// - a tall column of code raining down,
+    /// - scattered small blocks of code,
+    /// - picture corruption: blocks of the image shifted and posterized, no text.
     fn breakthrough(&self, out: &mut [u32], t: f32, dirty: &mut Vec<Rect>) {
         let (sw, sh) = (self.sw, self.sh);
         let amount = self.look.breakthrough.clamp(0.0, 1.0);
         let f = ((sh as f32 / 540.0).round() as usize).max(1);
         let cs = 8 * f;
         let (cols, rows) = (sw.div_ceil(cs), sh.div_ceil(cs));
-        let lines = code_lines();
         let slots = 1 + (amount * 5.0) as usize;
         let seed = self.seed + 61;
-        let mut row_buf = vec![0u32; sw];
         for k in 0..slots {
-            let life = 0.8 + hash2(k as i64, 1, seed) * 2.2;
-            let gap = life * (3.5 - amount * 3.0).max(0.4);
-            let period = life + gap;
+            // each slot repeats on its own period; within a period the break starts at a random
+            // moment and lasts a random time, and some periods are skipped, so it never pulses
+            let period = 2.5 + hash2(k as i64, 1, seed) * 4.0 * (1.6 - amount);
             let tt = t + hash2(k as i64, 2, seed) * period;
             let cyc = (tt / period).floor() as i64;
-            let age = tt - cyc as f32 * period;
-            if age > life || hash2(k as i64, cyc, seed + 1) > 0.35 + amount * 0.65 {
+            let in_cyc = tt - cyc as f32 * period;
+            let h = |n: i64| hash2(k as i64 * 7 + n, cyc, seed + 2);
+            if h(0) > 0.35 + amount * 0.65 {
+                continue;
+            }
+            let life = period * (0.2 + h(10) * 0.35);
+            let begin = (period - life) * h(11);
+            let age = in_cyc - begin;
+            if age < 0.0 || age > life {
                 continue;
             }
             let p = age / life;
             // opens fast, holds, closes
             let open = (p / 0.15).min(1.0).min((1.0 - p) / 0.25).clamp(0.0, 1.0);
-            let h = |n: i64| hash2(k as i64 * 7 + n, cyc, seed + 2);
-            let band_rows = 2 + (h(1) * (3.0 + amount * 9.0)) as usize;
-            let r0 = (h(2) * rows.saturating_sub(band_rows) as f32) as usize;
-            let c_w = ((0.2 + h(3) * 0.5 + amount * 0.3) * cols as f32) as usize;
-            let c0 = (h(4) * cols.saturating_sub(c_w) as f32) as usize;
             let tick = (t * 14.0).floor() as i64;
+            let colours = BREAK_COLOURS[(h(12) * BREAK_COLOURS.len() as f32) as usize % BREAK_COLOURS.len()];
+            let ev = BreakEvent { k, cyc, seed, f, cs, cols, rows, amount, open, age, tick, colours };
+            #[cfg(test)]
+            let pick = bench::FORCE_KIND.with(|f| f.get()).unwrap_or((h(13) * 9.0) as usize);
+            #[cfg(not(test))]
+            let pick = (h(13) * 9.0) as usize;
+            match pick {
+                0..=2 => self.break_band(out, &ev, BandText::Source, dirty),
+                3 => self.break_band(out, &ev, BandText::Hex, dirty),
+                4 => self.break_band(out, &ev, BandText::Log, dirty),
+                5 | 6 => self.break_rain(out, &ev, dirty),
+                7 => self.break_blocks(out, &ev, dirty),
+                _ => self.break_corrupt(out, &ev, dirty),
+            }
+        }
+    }
 
-            // 1. tear: rows around the band slide sideways with an RGB split
-            let y0 = r0.saturating_sub(1) * cs;
-            let y1 = ((r0 + band_rows + 1) * cs).min(sh);
-            dirty.push((0, y0.min(sh), sw, y1.saturating_sub(y0)));
-            for y in y0..y1 {
-                let slice = (y / (2 * f)) as i64;
-                let off = ((hash2(slice, tick, seed + 3) - 0.5) * 2.0 * open * (12 + (amount * 40.0) as i64) as f32 * f as f32) as i64;
-                if off == 0 {
+    /// One text cell (column `c`, row `r`) of the breakthrough, character `ch`.
+    fn put_char(&self, out: &mut [u32], ev: &BreakEvent, (c, r): (usize, usize), ch: u8, (fg, bg): (u32, u32)) {
+        let (sw, sh, cs, f) = (self.sw, self.sh, ev.cs, ev.f);
+        let ch = if ch.is_ascii_graphic() || ch == b' ' { ch } else { b' ' };
+        let glyph = font8x8::legacy::BASIC_LEGACY[ch as usize & 127];
+        for gy in 0..cs {
+            let y = r * cs + gy;
+            if y >= sh {
+                break;
+            }
+            let bits = glyph[gy / f];
+            for gx in 0..cs {
+                let x = c * cs + gx;
+                if x >= sw {
+                    break;
+                }
+                out[y * sw + x] = if (bits >> (gx / f)) & 1 == 1 { fg } else { bg };
+            }
+        }
+    }
+
+    /// Rows `y0..y1` slide sideways by a jittering amount with the colour channels split.
+    fn tear_rows(&self, out: &mut [u32], ev: &BreakEvent, y0: usize, y1: usize) {
+        let (sw, f) = (self.sw, ev.f);
+        let mut row_buf = vec![0u32; sw];
+        for y in y0..y1.min(self.sh) {
+            let slice = (y / (2 * f)) as i64;
+            let off = ((hash2(slice, ev.tick, ev.seed + 3) - 0.5) * 2.0 * ev.open * (12 + (ev.amount * 40.0) as i64) as f32 * f as f32) as i64;
+            if off == 0 {
+                continue;
+            }
+            let row = &mut out[y * sw..(y + 1) * sw];
+            row_buf.copy_from_slice(row);
+            let split = (2 * f) as i64;
+            for x in 0..sw as i64 {
+                let at = |dx: i64| row_buf[(x - off - dx).rem_euclid(sw as i64) as usize];
+                let (r, g, b) = (at(split) >> 16 & 255, at(0) >> 8 & 255, at(-split) & 255);
+                row[x as usize] = (r << 16) | (g << 8) | b;
+            }
+        }
+    }
+
+    /// A torn horizontal band with text showing through a ragged crack.
+    fn break_band(&self, out: &mut [u32], ev: &BreakEvent, text: BandText, dirty: &mut Vec<Rect>) {
+        let (sw, sh, cs) = (self.sw, self.sh, ev.cs);
+        let h = |n: i64| hash2(ev.k as i64 * 7 + n, ev.cyc, ev.seed + 2);
+        let band_rows = (2 + (h(1) * (3.0 + ev.amount * 9.0)) as usize).min(ev.rows);
+        let r0 = (h(2) * ev.rows.saturating_sub(band_rows) as f32) as usize;
+        let c_w = (((0.2 + h(3) * 0.5 + ev.amount * 0.3) * ev.cols as f32) as usize).clamp(1, ev.cols);
+        let c0 = (h(4) * ev.cols.saturating_sub(c_w) as f32) as usize;
+
+        // 1. tear: rows around the band slide sideways with an RGB split
+        let y0 = r0.saturating_sub(1) * cs;
+        let y1 = ((r0 + band_rows + 1) * cs).min(sh);
+        dirty.push((0, y0.min(sh), sw, y1.saturating_sub(y0)));
+        self.tear_rows(out, ev, y0, y1);
+
+        // 2. crack: cells inside the band show text on near-black
+        let lines = code_lines();
+        let start_line = (h(5) * lines.len() as f32) as usize;
+        let scroll = (ev.age * 10.0) as usize;
+        let ccx = c0 as f32 + c_w as f32 / 2.0;
+        let ccy = r0 as f32 + band_rows as f32 / 2.0;
+        let indent = (h(6) * 4.0) as usize;
+        // a crash log types itself out line by line
+        let typed = (ev.age * 60.0) as usize;
+        for r in r0..(r0 + band_rows).min(ev.rows) {
+            let line: Vec<u8> = match text {
+                BandText::Source => {
+                    // the row's text runs on into the following lines rather than repeating
+                    let mut v: Vec<u8> = Vec::new();
+                    let mut li = (start_line + scroll + (r - r0) * 3) % lines.len();
+                    while v.len() < c_w + indent {
+                        v.extend_from_slice(lines[li].trim_start().as_bytes());
+                        v.extend_from_slice(b"  ");
+                        li = (li + 1) % lines.len();
+                    }
+                    v
+                }
+                BandText::Hex => hex_line(start_line * 40 + (scroll + r - r0) * 16).into_bytes(),
+                BandText::Log => {
+                    let n = scroll / 3 + r - r0;
+                    let v = log_line(ev.k as i64, ev.cyc, n, start_line).into_bytes();
+                    // rows above the newest one are complete; the newest is still typing
+                    let shown = if r - r0 + 1 == band_rows { typed % (v.len() + 20) } else { v.len() };
+                    v[..shown.min(v.len())].to_vec()
+                }
+            };
+            let fg_row = match text {
+                BandText::Log if line.windows(5).any(|w| w == b"panic" || w == b"FATAL") => 0xe5484d,
+                BandText::Log if line.windows(4).any(|w| w == b"warn") => 0xffb000,
+                _ if hash2(r as i64, ev.cyc, ev.seed + 6) < 0.2 => ev.colours.1,
+                _ => ev.colours.0,
+            };
+            let skip = if matches!(text, BandText::Source) { indent } else { 0 };
+            for c in c0..(c0 + c_w).min(ev.cols) {
+                // ragged edge: cells near the middle open first
+                let dx = (c as f32 - ccx).abs() / (c_w as f32 / 2.0).max(1.0);
+                let dy = (r as f32 - ccy).abs() / (band_rows as f32 / 2.0).max(1.0);
+                let edge = dx.max(dy * 0.8);
+                let jag = hash2(c as i64, r as i64 + ev.cyc * 97, ev.seed + 4) * 0.35;
+                if edge + jag > ev.open * 1.15 {
                     continue;
                 }
-                let row = &mut out[y * sw..(y + 1) * sw];
-                row_buf.copy_from_slice(row);
-                let split = (2 * f) as i64;
-                for x in 0..sw as i64 {
-                    let at = |dx: i64| row_buf[(x - off - dx).rem_euclid(sw as i64) as usize];
-                    let (r, g, b) = (at(split) >> 16 & 255, at(0) >> 8 & 255, at(-split) & 255);
-                    row[x as usize] = (r << 16) | (g << 8) | b;
+                let ch = line.get(c - c0 + skip).copied().unwrap_or(b' ');
+                // flicker a few characters
+                let ch = if hash2(c as i64, r as i64 * 13 + ev.tick, ev.seed + 5) < 0.04 { b'#' } else { ch };
+                self.put_char(out, ev, (c, r), ch, (fg_row, ev.colours.2));
+            }
+        }
+    }
+
+    /// A tall column (or a few) of code characters raining down, bright at the head.
+    fn break_rain(&self, out: &mut [u32], ev: &BreakEvent, dirty: &mut Vec<Rect>) {
+        let (sw, sh, cs) = (self.sw, self.sh, ev.cs);
+        let h = |n: i64| hash2(ev.k as i64 * 7 + n, ev.cyc, ev.seed + 8);
+        let width = (3 + (h(1) * (4.0 + ev.amount * 14.0)) as usize).min(ev.cols);
+        let height = ((0.35 + h(2) * 0.6) * ev.rows as f32) as usize;
+        let height = height.clamp(3, ev.rows);
+        let c0 = (h(3) * ev.cols.saturating_sub(width) as f32) as usize;
+        let r0 = (h(4) * ev.rows.saturating_sub(height) as f32) as usize;
+        let x0 = c0 * cs;
+        let y0 = r0 * cs;
+        dirty.push((x0.min(sw), y0.min(sh), ((c0 + width) * cs).min(sw).saturating_sub(x0), ((r0 + height) * cs).min(sh).saturating_sub(y0)));
+        let src: Vec<u8> = code_lines()[(h(5) * code_lines().len() as f32) as usize].bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+        let src = if src.is_empty() { GLITCH_CHARS.to_vec() } else { src };
+        for c in c0..(c0 + width).min(ev.cols) {
+            // each column falls at its own speed and starts at its own time
+            let speed = 8.0 + hash2(c as i64, ev.cyc, ev.seed + 9) * 22.0;
+            let delay = hash2(c as i64, ev.cyc, ev.seed + 10) * 0.4;
+            let head = ((ev.age - delay).max(0.0) * speed) as usize;
+            let trail = 4 + (hash2(c as i64, ev.cyc, ev.seed + 11) * height as f32 * 0.8) as usize;
+            // as the break closes, the trail shortens from the top
+            let trail = ((trail as f32) * ev.open.max(0.15)) as usize;
+            for i in 0..height {
+                let r = r0 + i;
+                if i > head || head - i > trail {
+                    continue;
+                }
+                let n = head - i;
+                let ch = src[(c * 31 + r * 7 + ev.tick as usize / 2) % src.len()];
+                let fg = if n == 0 { ev.colours.1 } else { fade(ev.colours.0, ev.colours.2, n as f32 / trail.max(1) as f32) };
+                self.put_char(out, ev, (c, r), ch, (fg, ev.colours.2));
+            }
+        }
+    }
+
+    /// Small blocks of code scattered across the screen, flickering in and out.
+    fn break_blocks(&self, out: &mut [u32], ev: &BreakEvent, dirty: &mut Vec<Rect>) {
+        let (sw, sh, cs) = (self.sw, self.sh, ev.cs);
+        let h = |n: i64| hash2(ev.k as i64 * 7 + n, ev.cyc, ev.seed + 12);
+        let n = 3 + (h(1) * (4.0 + ev.amount * 10.0)) as usize;
+        let lines = code_lines();
+        for b in 0..n {
+            let hb = |m: i64| hash2(b as i64 * 11 + m, ev.cyc, ev.seed + 13 + ev.k as u32);
+            // blocks appear one after another while the break opens
+            if hb(0) > ev.open {
+                continue;
+            }
+            let w = (2 + (hb(1) * 7.0) as usize).min(ev.cols);
+            let hh = (1 + (hb(2) * 2.5) as usize).min(ev.rows);
+            let c0 = (hb(3) * ev.cols.saturating_sub(w) as f32) as usize;
+            let r0 = (hb(4) * ev.rows.saturating_sub(hh) as f32) as usize;
+            let x0 = c0 * cs;
+            let y0 = r0 * cs;
+            dirty.push((x0.min(sw), y0.min(sh), ((c0 + w) * cs).min(sw).saturating_sub(x0), ((r0 + hh) * cs).min(sh).saturating_sub(y0)));
+            let line = lines[(hb(5) * lines.len() as f32) as usize % lines.len()].trim_start().as_bytes();
+            for r in r0..r0 + hh {
+                for c in c0..c0 + w {
+                    let i = (c - c0) + (r - r0) * w + (ev.tick as usize / 3) % 4;
+                    let ch = line.get(i).copied().unwrap_or(GLITCH_CHARS[(c + r) % GLITCH_CHARS.len()]);
+                    let fg = if hb(6) < 0.3 { ev.colours.1 } else { ev.colours.0 };
+                    self.put_char(out, ev, (c, r), ch, (fg, ev.colours.2));
                 }
             }
+        }
+    }
 
-            // 2. crack: cells inside the band show scrolling source code on near-black
-            let start_line = (h(5) * lines.len() as f32) as usize;
-            let scroll = (age * 10.0) as usize;
-            let ccx = c0 as f32 + c_w as f32 / 2.0;
-            let ccy = r0 as f32 + band_rows as f32 / 2.0;
-            for r in r0..(r0 + band_rows).min(rows) {
-                // the row's text runs on into the following lines rather than repeating
-                let indent = (h(6) * 4.0) as usize;
-                let mut text: Vec<u8> = Vec::new();
-                let mut li = (start_line + scroll + (r - r0) * 3) % lines.len();
-                while text.len() < c_w + indent {
-                    text.extend_from_slice(lines[li].trim_start().as_bytes());
-                    text.extend_from_slice(b"  ");
-                    li = (li + 1) % lines.len();
+    /// Picture corruption: blocks of the image jump to the wrong place and lose colour depth,
+    /// like a damaged video stream. No text.
+    fn break_corrupt(&self, out: &mut [u32], ev: &BreakEvent, dirty: &mut Vec<Rect>) {
+        let (sw, sh, cs) = (self.sw, self.sh, ev.cs);
+        let h = |n: i64| hash2(ev.k as i64 * 7 + n, ev.cyc, ev.seed + 14);
+        let band_rows = (3 + (h(1) * (4.0 + ev.amount * 10.0)) as usize).min(ev.rows);
+        let r0 = (h(2) * ev.rows.saturating_sub(band_rows) as f32) as usize;
+        let y0 = r0 * cs;
+        let y1 = ((r0 + band_rows) * cs).min(sh);
+        dirty.push((0, y0.min(sh), sw, y1.saturating_sub(y0)));
+        let src: Vec<u32> = out[y0 * sw..y1 * sw].to_vec();
+        let bh = y1 - y0;
+        let block = cs * 2;
+        // a posterize level for the whole break
+        let levels = [0xe0u32, 0xc0, 0x80][(h(3) * 3.0) as usize % 3];
+        let mask = (levels << 16) | (levels << 8) | levels;
+        // keep the middle of each step so the picture doesn't just get darker
+        let half = (!levels & 0xff) >> 1;
+        let half = (half << 16) | (half << 8) | half;
+        let tick = ev.tick / 2;
+        for by in (0..bh).step_by(block) {
+            for bx in (0..sw).step_by(block) {
+                let hb = hash2((bx / block) as i64 + ev.k as i64 * 977, (by / block) as i64 * 31 + tick, ev.seed + 15);
+                if hb > 0.25 + 0.6 * ev.open {
+                    continue;
                 }
-                let line = &text[..];
-                for c in c0..(c0 + c_w).min(cols) {
-                    // ragged edge: cells near the middle open first
-                    let dx = (c as f32 - ccx).abs() / (c_w as f32 / 2.0).max(1.0);
-                    let dy = (r as f32 - ccy).abs() / (band_rows as f32 / 2.0).max(1.0);
-                    let edge = dx.max(dy * 0.8);
-                    let jag = hash2(c as i64, r as i64 + cyc * 97, seed + 4) * 0.35;
-                    if edge + jag > open * 1.15 {
-                        continue;
-                    }
-                    let ch = line.get(c - c0 + indent).copied().unwrap_or(b' ');
-                    let ch = if ch.is_ascii_graphic() || ch == b' ' { ch } else { b' ' };
-                    // flicker a few characters
-                    let ch = if hash2(c as i64, r as i64 * 13 + tick, seed + 5) < 0.04 { b'#' } else { ch };
-                    let fg = if hash2(r as i64, cyc, seed + 6) < 0.2 { 0xf6ecdc } else { 0xd97757 };
-                    let bg = 0x141413;
-                    let glyph = font8x8::legacy::BASIC_LEGACY[ch as usize & 127];
-                    for gy in 0..cs {
-                        let y = r * cs + gy;
-                        if y >= sh {
-                            break;
+                // where this block's pixels come from: shifted sideways, sometimes up or down
+                let dx = ((hash2((bx / block) as i64, tick, ev.seed + 16) - 0.5) * sw as f32 * 0.3) as i64;
+                let dy = if hb < 0.1 { block as i64 } else { 0 };
+                let swap = hb < 0.05;
+                for y in by..(by + block).min(bh) {
+                    let sy = (y as i64 + dy).rem_euclid(bh as i64) as usize;
+                    for x in bx..(bx + block).min(sw) {
+                        let sx = (x as i64 + dx).rem_euclid(sw as i64) as usize;
+                        let mut v = (src[sy * sw + sx] & mask) | half;
+                        if swap {
+                            // channels swapped: red <-> blue
+                            v = ((v & 0xff) << 16) | (v & 0xff00) | ((v >> 16) & 0xff);
                         }
-                        let bits = glyph[gy / f];
-                        for gx in 0..cs {
-                            let x = c * cs + gx;
-                            if x >= sw {
-                                break;
-                            }
-                            out[y * sw + x] = if (bits >> (gx / f)) & 1 == 1 { fg } else { bg };
-                        }
+                        out[(y0 + y) * sw + x] = v;
                     }
                 }
             }
@@ -1508,6 +1760,52 @@ pub(crate) mod bench {
         (f[11].parse::<f64>().unwrap() + f[12].parse::<f64>().unwrap()) * 10.0
     }
 
+    thread_local! {
+        /// Tests can force one breakthrough look (0..=8, as picked in `breakthrough`).
+        pub static FORCE_KIND: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// Frames of each breakthrough look, for checking them by eye:
+    /// `cargo test --release dump_breakthroughs -- --ignored` (PNG files go to $NYNEX_DUMP or /tmp).
+    #[test]
+    #[ignore]
+    fn dump_breakthroughs() {
+        let dir = std::env::var("NYNEX_DUMP").unwrap_or_else(|_| "/tmp".into());
+        let photo = std::env::var("NYNEX_PHOTO").ok();
+        let src = match &photo {
+            Some(p) => load_source(std::path::Path::new(p)).map(|s| Source { img: s.img.clone(), frames: Vec::new() }).unwrap(),
+            None => test_source(),
+        };
+        let look = Look { breakthrough: 1.0, glitch: 0.25, ..callum_look() };
+        let (sw, sh) = (1280, 800);
+        for (kind, name) in [(0, "source"), (3, "hex"), (4, "log"), (5, "rain"), (7, "blocks"), (8, "corrupt")] {
+            FORCE_KIND.with(|f| f.set(Some(kind)));
+            let mut sc = Scene::new(&src, None, sw, sh, &look, &Logo::default(), 11);
+            let mut out = vec![0u32; sw * sh];
+            // pick the moment with the most of the effect on screen
+            let (mut best_t, mut best_n) = (0.0f32, 0usize);
+            let mut plain = vec![0u32; sw * sh];
+            for i in 0..80 {
+                let t = 1.0 + i as f32 * 0.21;
+                let mut d = Vec::new();
+                sc.render(t, &mut plain);
+                sc.breakthrough(&mut out, t, &mut d);
+                let n: usize = d.iter().map(|r| r.2 * r.3).sum();
+                if n > best_n {
+                    best_n = n;
+                    best_t = t;
+                }
+            }
+            sc.render(best_t, &mut out);
+            let img = image::RgbImage::from_fn(sw as u32, sh as u32, |x, y| {
+                let p = out[y as usize * sw + x as usize];
+                image::Rgb([(p >> 16) as u8, (p >> 8) as u8, p as u8])
+            });
+            img.save(format!("{dir}/break-{name}.png")).unwrap();
+        }
+        FORCE_KIND.with(|f| f.set(None));
+    }
+
     /// The reused still picture must look exactly like drawing every frame from scratch.
     #[test]
     fn still_frames_match_full_render() {
@@ -1538,8 +1836,10 @@ pub(crate) mod bench {
             let mut a = Scene::new(&src, None, sw, sh, &look, &Logo::default(), 5);
             let mut b = Scene::new(&src, None, sw, sh, &look, &Logo::default(), 5);
             let (mut oa, mut ob, mut copy) = (vec![0u32; sw * sh], vec![0u32; sw * sh], vec![0u32; sw * sh]);
-            for i in 0..60 {
-                let t = i as f32 * 0.07;
+            for i in 0..240 {
+                let t = i as f32 * 0.09;
+                // walk through every breakthrough look
+                FORCE_KIND.with(|f| f.set(Some(i / 30 % 9)));
                 a.render(t, &mut oa);
                 match b.render_damage(t, &mut ob, i > 0) {
                     None => copy.copy_from_slice(&ob),
