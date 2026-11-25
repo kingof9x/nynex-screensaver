@@ -86,7 +86,7 @@ pub fn set_idle_seconds(secs: u32) -> String {
 }
 
 pub fn human(secs: u32) -> String {
-    if secs % 60 == 0 {
+    if secs.is_multiple_of(60) {
         format!("{} min", secs / 60)
     } else if secs > 60 {
         format!("{} min {} s", secs / 60, secs % 60)

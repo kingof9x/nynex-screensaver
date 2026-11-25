@@ -27,6 +27,8 @@ mod win {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
+    /// EnumWindows callback. SAFETY: `out` is the address of a local HWND in
+    /// `desktop_layer`, which outlives the EnumWindows call that invokes this.
     unsafe extern "system" fn find_worker(top: HWND, out: LPARAM) -> BOOL {
         let defview = wide("SHELLDLL_DefView");
         let worker = wide("WorkerW");
@@ -50,6 +52,8 @@ mod win {
     }
 
     pub fn desktop_layer() -> Option<Layer> {
+        // SAFETY: window lookups by NUL-terminated class names (temporaries that live until
+        // the end of each call's statement) and messages to Explorer's own windows.
         unsafe {
             let progman = FindWindowW(wide("Progman").as_ptr(), std::ptr::null());
             if progman.is_null() {
@@ -78,6 +82,8 @@ mod win {
     /// Ok says what was done (for wallpaper.log), Err why it failed.
     pub fn attach(hwnd: isize, x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
         let layer = desktop_layer().ok_or("Could not find the desktop layer behind the icons.")?;
+        // SAFETY: `hwnd` is one of our own live winit windows; the rest are style and
+        // z-order changes on it and Explorer's desktop windows.
         unsafe {
             let hwnd = hwnd as *mut c_void;
             let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
@@ -121,6 +127,7 @@ mod win {
 
     /// Repaint the normal wallpaper (after the animated one goes away).
     pub fn restore_desktop() {
+        // SAFETY: `buf` is a local buffer and its length in u16s is passed.
         unsafe {
             let mut buf = vec![0u16; 1024];
             if SystemParametersInfoW(SPI_GETDESKWALLPAPER, buf.len() as u32, buf.as_mut_ptr().cast(), 0) != 0 {
@@ -181,6 +188,7 @@ pub fn starts_with_windows() -> bool {
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
     let (k, v): (Vec<u16>, Vec<u16>) = (RUN_KEY.encode_utf16().chain([0]).collect(), RUN_NAME.encode_utf16().chain([0]).collect());
     let mut size = 0u32;
+    // SAFETY: NUL-terminated names; null data pointer only asks whether the value exists.
     unsafe { RegGetValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), std::ptr::null_mut(), &mut size) == 0 }
 }
 
@@ -189,6 +197,7 @@ pub fn set_start_with_windows(on: bool) -> bool {
     use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
     let k: Vec<u16> = RUN_KEY.encode_utf16().chain([0]).collect();
     let v: Vec<u16> = RUN_NAME.encode_utf16().chain([0]).collect();
+    // SAFETY: NUL-terminated strings that outlive the registry calls; lengths in bytes.
     unsafe {
         if on {
             if let Ok(exe) = std::env::current_exe() {

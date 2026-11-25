@@ -44,6 +44,8 @@ struct Output {
     /// The compositor asked for a new frame (or we have not drawn one yet).
     wants_frame: bool,
     player: Option<Player>,
+    /// A black frame has gone out for the current size, so the (slow) scene build can start.
+    black_sent: bool,
     last: Instant,
     buffers: Vec<Buffer>,
     /// Which frame each buffer in `buffers` holds (0 = unknown).
@@ -139,6 +141,7 @@ pub fn run_wallpaper() -> Result<(), String> {
         if let Some(guard) = queue.prepare_read() {
             let timeout = next_frame.saturating_duration_since(Instant::now()).min(Duration::from_millis(500));
             let mut fds = [libc::pollfd { fd: guard.connection_fd().as_raw_fd(), events: libc::POLLIN, revents: 0 }];
+            // SAFETY: one valid pollfd in a local array, and we pass its length (1).
             let n = unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout.as_millis() as i32) };
             if n > 0 {
                 if let Err(e) = guard.read() {
@@ -179,6 +182,7 @@ impl State {
             configured: false,
             wants_frame: true,
             player: None,
+            black_sent: false,
             last: Instant::now(),
             buffers: Vec::new(),
             held: Vec::new(),
@@ -216,11 +220,16 @@ impl State {
         let damage = match &mut o.player {
             Some(p) => p.update_damage(dt, &mut o.scratch, has_last),
             None => {
-                // first frame: show black right away, build the scene for the next one
+                // first frame: send black straight away, so the monitor isn't left showing
+                // garbage; the next frame builds the scene (decoding and analysing the image
+                // can take a moment) and the one after that shows it
                 o.scratch.fill(0);
-                let offset = if self.cfg.different_per_monitor { o.index } else { 0 };
-                o.player = Some(Player::new(self.cfg.clone(), w as usize, h as usize, offset, o.seed));
-                o.last = Instant::now();
+                if o.black_sent {
+                    let offset = if self.cfg.different_per_monitor { o.index } else { 0 };
+                    o.player = Some(Player::new(self.cfg.clone(), w as usize, h as usize, offset, o.seed));
+                    o.last = Instant::now();
+                }
+                o.black_sent = true;
                 None
             }
         };
@@ -363,7 +372,10 @@ impl LayerShellHandler for State {
             // it up, which suits pixel art and keeps the CPU cost down.
             o.size = (w, h);
             o.player = None;
+            o.black_sent = false;
             o.buffers.clear();
+            o.held.clear();
+            o.history.clear();
         }
         let first = !o.configured;
         o.configured = true;

@@ -8,6 +8,28 @@
 //! snaps colours toward a small dithered palette by the stylize amount, and scales the grid
 //! up to the screen with hard edges. The ASCII slider turns a share of the screen's cells
 //! into characters.
+//!
+//! How the work is split, roughly in the order a frame goes through it:
+//!
+//! | step | where | runs |
+//! |---|---|---|
+//! | decode, shrink to 2560 px | `load_source` | once per file, on a loader thread |
+//! | crop, shrink to the grid, grade, palette, sky/water analysis | `Scene::new` | once per landscape and screen size |
+//! | clouds, water, sparkles, birds, logo on the grid | `build_grid` | every frame, rows in parallel |
+//! | dither to the palette and scale up | `upscale` | every frame, rows in parallel |
+//! | ASCII cells, breakthroughs | `ascii_in`, `breakthrough` | every frame, only where they show |
+//!
+//! Colours are `[f32; 3]` (0..255) while being worked on and packed into `0x00RRGGBB`
+//! `u32`s for the screen, which is what both softbuffer and Wayland's XRGB8888 expect.
+//!
+//! Speed matters here more than anywhere else: this file runs 30 times a second on every
+//! monitor. The main tricks are:
+//! * work on the small grid (a few hundred pixels wide), not on the screen;
+//! * look up the nearest palette colour in a 32x32x32 table instead of searching;
+//! * redraw only the parts of the screen that changed (`render_damage`), and skip whole
+//!   frames when nothing moves (`grid_is_still`);
+//! * everything random comes from `hash2`, a pure function of position, time and seed, so
+//!   any row can be drawn on any thread in any order and still match.
 
 use crate::config::{Logo, Look};
 use image::{imageops::FilterType, RgbImage};
@@ -56,17 +78,28 @@ const BREAK_COLOURS: &[(u32, u32, u32)] = &[
 
 /// What one breakthrough looks like right now (shared by its drawing functions).
 struct BreakEvent {
+    /// Which of the simultaneous events this is (0..count).
     k: usize,
+    /// Which cycle of the event schedule we are in; changes every few seconds.
     cyc: i64,
+    /// Seed for this event in this cycle, so each one looks different.
     seed: u32,
+    /// Which effect: band, rain, blocks or corruption.
     f: usize,
+    /// Character cell size in screen pixels.
     cs: usize,
+    /// Screen size in character cells.
     cols: usize,
     rows: usize,
+    /// The breakthrough slider, 0..1.
     amount: f32,
+    /// How far the event has opened, 0..1 (rises, holds, then closes).
     open: f32,
+    /// Seconds since this event started.
     age: f32,
+    /// A counter that ticks a few times a second, for text that scrolls or flickers.
     tick: i64,
+    /// (text, highlight, background) colours for this event.
     colours: (u32, u32, u32),
 }
 
@@ -119,18 +152,24 @@ fn fade(a: u32, b: u32, t: f32) -> u32 {
     (m(0) << 16) | (m(1) << 8) | m(2)
 }
 
+/// Ordered-dither threshold for pixel (x, y), from -0.5 to 0.5. A 4x4 Bayer matrix spreads
+/// the rounding error of a reduced palette into a fine, regular cross-hatch, which is the
+/// classic look of 1990s pixel art (and costs nothing compared with error diffusion).
 #[inline]
 fn bayer(x: usize, y: usize) -> f32 {
     (BAYER4[y & 3][x & 3] + 0.5) / 16.0 - 0.5
 }
+/// Perceived brightness (ITU-R BT.601 weights): green counts most, blue least.
 #[inline]
 fn lum(c: Rgb) -> f32 {
     c[0] * LUM[0] + c[1] * LUM[1] + c[2] * LUM[2]
 }
+/// Linear blend from `a` (t = 0) to `b` (t = 1).
 #[inline]
 fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
 }
+/// Float colour to a screen pixel `0x00RRGGBB`, clamping out-of-range channels.
 #[inline]
 fn pack(c: Rgb) -> u32 {
     let r = c[0].clamp(0.0, 255.0) as u32;
@@ -142,6 +181,7 @@ fn pack(c: Rgb) -> u32 {
 fn unpack(p: u32) -> Rgb {
     [((p >> 16) & 255) as f32, ((p >> 8) & 255) as f32, (p & 255) as f32]
 }
+/// 0 below `e0`, 1 above `e1`, and an S-curve in between (no hard edge).
 #[inline]
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
@@ -149,6 +189,10 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 }
 
 // ------------------------------------------------------------------ noise
+/// A cheap integer hash of (x, y, seed) mapped to 0..1. It is the only source of
+/// "randomness" in the renderer: the same inputs always give the same number, so a twinkle
+/// or a bird is decided by where and when it is, not by a random number generator that
+/// threads would have to share. The multipliers are large primes from xxHash.
 #[inline]
 pub fn hash2(x: i64, y: i64, seed: u32) -> f32 {
     let mut n = (x.wrapping_mul(374761393) as u64)
@@ -159,7 +203,9 @@ pub fn hash2(x: i64, y: i64, seed: u32) -> f32 {
     ((n ^ (n >> 16)) & 0xFFFF) as f32 / 65535.0
 }
 
-/// Value noise that wraps in x every `period` lattice cells.
+/// Value noise that wraps in x every `period` lattice cells: random values on a grid of
+/// whole-number points, smoothly interpolated between them. Wrapping lets clouds drift
+/// across the screen forever without a seam.
 fn wnoise(x: f32, y: f32, seed: u32, period: i64) -> f32 {
     let (ix, iy) = (x.floor(), y.floor());
     let (fx, fy) = (x - ix, y - iy);
@@ -174,6 +220,9 @@ fn wnoise(x: f32, y: f32, seed: u32, period: i64) -> f32 {
     (a * (1.0 - fx) + b * fx) * (1.0 - fy) + (c * (1.0 - fx) + d * fx) * fy
 }
 
+/// Fractal noise ("fBm"): four layers of `wnoise`, each twice as fine and half as strong
+/// as the one before. Big soft shapes with smaller detail on top, which is what clouds look
+/// like. Returns roughly 0..1.
 fn wfbm(x: f32, y: f32, seed: u32, period: i64) -> f32 {
     let (mut v, mut a, mut f, mut tot) = (0.0, 0.5, 1.0f32, 0.0);
     for o in 0..4 {
@@ -193,22 +242,52 @@ pub struct Source {
     pub frames: Vec<(RgbImage, f32)>,
 }
 
-/// Most frames kept from an animated GIF (memory stays modest even for long loops).
+/// Most frames kept from an animated GIF.
 const MAX_GIF_FRAMES: usize = 300;
+/// Most bytes of decoded GIF frames held while loading. 300 frames at 1280x720 would be
+/// 830 MB; past this budget every other frame is dropped (its time is merged into the frame
+/// before it), so a long, big GIF plays at a lower frame rate instead of eating memory.
+const GIF_BYTES_BUDGET: usize = 192 * 1024 * 1024;
 
 fn load_gif_frames(path: &Path) -> Vec<(RgbImage, f32)> {
     use image::AnimationDecoder;
     let Ok(file) = std::fs::File::open(path) else { return Vec::new() };
     let Ok(dec) = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(file)) else { return Vec::new() };
-    let mut out = Vec::new();
-    for f in dec.into_frames().take(MAX_GIF_FRAMES) {
+    let mut out: Vec<(RgbImage, f32)> = Vec::new();
+    let mut bytes = 0usize;
+    // keep every `stride`-th frame; doubles each time the budget is hit
+    let mut stride = 1usize;
+    for (n_frame, f) in dec.into_frames().take(MAX_GIF_FRAMES * 8).enumerate() {
         let Ok(f) = f else { break };
         let (n, d) = f.delay().numer_denom_ms();
         // browsers treat very short delays as 0.1 s; do the same
         let secs = if d == 0 || n as f32 / d as f32 <= 10.0 { 0.1 } else { n as f32 / d as f32 / 1000.0 };
+        if n_frame % stride != 0 {
+            // dropped frame: the kept frame before it stays up for its time too
+            if let Some(last) = out.last_mut() {
+                last.1 += secs;
+            }
+            continue;
+        }
         let img = image::DynamicImage::ImageRgba8(f.into_buffer());
         let img = if img.width() > 1280 || img.height() > 1280 { img.resize(1280, 1280, FilterType::Triangle) } else { img };
-        out.push((img.to_rgb8(), secs));
+        let rgb = img.to_rgb8();
+        bytes += rgb.as_raw().len();
+        out.push((rgb, secs));
+        if bytes > GIF_BYTES_BUDGET || out.len() > MAX_GIF_FRAMES {
+            // halve what we hold: merge each odd frame's time into the even frame before it
+            let mut kept: Vec<(RgbImage, f32)> = Vec::with_capacity(out.len() / 2 + 1);
+            for (i, fr) in out.into_iter().enumerate() {
+                if i % 2 == 0 {
+                    kept.push(fr);
+                } else if let Some(last) = kept.last_mut() {
+                    last.1 += fr.1;
+                }
+            }
+            out = kept;
+            bytes = out.iter().map(|f| f.0.as_raw().len()).sum();
+            stride *= 2;
+        }
     }
     if out.len() < 2 {
         out.clear();
@@ -216,6 +295,10 @@ fn load_gif_frames(path: &Path) -> Vec<(RgbImage, f32)> {
     out
 }
 
+/// Decode a landscape file. Runs on a loader thread (see `player.rs`), so it may be slow.
+/// Animated GIFs keep their frames; everything else becomes one still, shrunk so its longest
+/// side is at most 2560 px (more than that is never seen: the grid is at most 2560 wide).
+/// The result is shared (`Arc`) because several monitors can show the same landscape.
 pub fn load_source(path: &Path) -> Result<Arc<Source>, String> {
     let is_gif = path.extension().map(|e| e.eq_ignore_ascii_case("gif")).unwrap_or(false);
     let frames = if is_gif { load_gif_frames(path) } else { Vec::new() };
@@ -231,7 +314,9 @@ pub fn load_source(path: &Path) -> Result<Arc<Source>, String> {
     } else {
         img
     };
-    Ok(Arc::new(Source { img: img.to_rgb8(), frames: Vec::new() }))
+    // into_rgb8 hands over the pixels without a copy when they are already 8-bit RGB (the
+    // usual case for JPEGs); to_rgb8 would briefly hold a second 20 to 45 MB copy
+    Ok(Arc::new(Source { img: img.into_rgb8(), frames: Vec::new() }))
 }
 
 /// Logo artwork as coverage 0..1 (transparent PNGs use alpha; opaque art uses darkness).
@@ -241,6 +326,8 @@ pub struct LogoArt {
     pub cov: Vec<f32>,
 }
 
+/// Read the logo picture once. Only its shape is kept, as "how much logo is here" per pixel;
+/// the logo is drawn in the scene's own colours.
 pub fn load_logo(path: &Path) -> Option<Arc<LogoArt>> {
     let img = image::open(path).ok()?.to_rgba8();
     let (w, h) = (img.width() as usize, img.height() as usize);
@@ -257,7 +344,11 @@ pub fn load_logo(path: &Path) -> Option<Arc<LogoArt>> {
 }
 
 // ------------------------------------------------------------------ analysis helpers
-fn crop_to_aspect(img: &RgbImage, aspect: f32) -> RgbImage {
+/// Cut the middle out of the photo so it has the screen's shape (like "fill" for a desktop
+/// background): nothing is stretched, the edges that don't fit are dropped.
+/// Returns a view into `img`, not a copy: a 2560 px photo is 20 MB, and the view is only read
+/// by the two resizes that follow.
+fn crop_to_aspect(img: &RgbImage, aspect: f32) -> image::SubImage<&RgbImage> {
     let (w, h) = (img.width(), img.height());
     let (cw, ch) = if w as f32 / h as f32 > aspect {
         (((h as f32) * aspect).round() as u32, h)
@@ -265,14 +356,18 @@ fn crop_to_aspect(img: &RgbImage, aspect: f32) -> RgbImage {
         (w, ((w as f32) / aspect).round() as u32)
     };
     let (x0, y0) = ((w - cw.min(w)) / 2, (h - ch.min(h)) / 2);
-    image::imageops::crop_imm(img, x0, y0, cw.min(w).max(1), ch.min(h).max(1)).to_image()
+    image::imageops::crop_imm(img, x0, y0, cw.min(w).max(1), ch.min(h).max(1))
 }
 
+/// Bytes to float colours, which the grading maths works in.
 fn to_vec(img: &RgbImage) -> Vec<Rgb> {
     img.pixels().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect()
 }
 
-/// Separable box blur with clamped edges.
+/// Separable box blur with clamped edges: each value becomes the average of a
+/// (2r+1)x(2r+1) square around it, done as a horizontal pass then a vertical one (much
+/// cheaper than averaging the square directly). Only used on the small grid while
+/// analysing, so the simple O(r) inner loop is fine.
 fn box_blur(a: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
     if r == 0 {
         return a.to_vec();
@@ -336,6 +431,7 @@ const RAMP_WARM: [u32; 8] = [0x7a4a3c, 0xa8604b, 0xcf8061, 0xe3a98c, 0xeecbb5, 0
 const RAMP_BLUE: [u32; 8] = [0x4f5d6e, 0x768898, 0x9eadba, 0xc0cbd3, 0xdae0e3, 0xe9ecea, 0xf3f3ee, 0xfbf8f2];
 const RAMP_GREEN: [u32; 8] = [0x56603f, 0x7a875f, 0xa0aa85, 0xc0c7a8, 0xd9dcc6, 0xe8eadc, 0xf3f2e8, 0xfbf8f2];
 
+/// Colour at position `t` (0 dark .. 1 light) along one of the ramps above.
 fn ramp(r: &[u32; 8], t: f32) -> Rgb {
     let x = t.clamp(0.0, 1.0) * 7.0;
     let i = (x as usize).min(6);
@@ -382,6 +478,11 @@ fn fm_color(c: Rgb, hue_from: Rgb) -> Rgb {
     ]
 }
 
+/// Choose the `k` colours that best represent the picture (the "colors" slider), with
+/// k-means clustering: start with `k` colours spread from darkest to lightest, then 12 times
+/// over, give each pixel to its nearest colour and move each colour to the average of its
+/// pixels. About 8000 sampled pixels are plenty and keep this to a few milliseconds.
+/// Returns the colours dark to light, with near-duplicates removed.
 fn kmeans_palette(px: &[Rgb], k: usize) -> Vec<Rgb> {
     let step = (px.len() / 8000).max(1);
     let data: Vec<Rgb> = px.iter().step_by(step).copied().collect();
@@ -424,6 +525,14 @@ fn kmeans_palette(px: &[Rgb], k: usize) -> Vec<Rgb> {
 
 /// Sky mask: smooth, gradually-changing colour flood-filled from the top edge, with enclosed
 /// holes (clouds, sun, birds) filled back in.
+///
+/// How: measure "texture" at each grid pixel (the standard deviation of brightness in a 5x5
+/// square; sky is smooth, trees and rock are busy). Seed a flood fill from smooth pixels on
+/// the top row and let it spread to neighbours that are also smooth and close in colour.
+/// The threshold adapts to the picture (3x the median texture of the top rows), so a hazy
+/// sky and a crisp one both work. Then a second fill from the bottom edge finds everything
+/// that is really ground; whatever neither fill reached (a cloud surrounded by sky) counts
+/// as sky too. The animation only adds clouds and stars where this mask is true.
 fn find_sky(px: &[Rgb], w: usize, h: usize) -> Vec<bool> {
     let mut s = vec![[0.0f32; 3]; w * h];
     for ch in 0..3 {
@@ -487,6 +596,12 @@ fn find_sky(px: &[Rgb], w: usize, h: usize) -> Vec<bool> {
 }
 
 /// Row where a lake reflection starts, if the lower part of the picture mirrors the upper part.
+///
+/// How: for every candidate row y in the middle of the picture, compare the rows above it
+/// with the rows below it *flipped* (row y-1 with y+1, y-2 with y+2, ...) using correlation of
+/// their brightness patterns. A real reflection scores high flipped but not when compared
+/// unflipped (which would just mean "the picture is similar everywhere", like fog). The best
+/// row wins if its score is over 0.5. The water ripple and glints are only drawn below it.
 fn find_water_line(px: &[Rgb], w: usize, h: usize) -> Option<usize> {
     let l0: Vec<f32> = px.iter().map(|&c| lum(c)).collect();
     let l = box_blur(&l0, w, h, 1);
@@ -499,8 +614,8 @@ fn find_water_line(px: &[Rgb], w: usize, h: usize) -> Option<usize> {
     let corr = |pairs: &mut dyn Iterator<Item = (usize, usize)>| -> f32 {
         let (mut sab, mut saa, mut sbb) = (0.0f64, 0.0f64, 0.0f64);
         for (a, b) in pairs {
-            for x in 0..w {
-                let (p, q) = (rows[a][x] as f64, rows[b][x] as f64);
+            for (&p, &q) in rows[a].iter().zip(rows[b].iter()) {
+                let (p, q) = (p as f64, q as f64);
                 sab += p * q;
                 saa += p * p;
                 sbb += q * q;
@@ -529,56 +644,87 @@ fn find_water_line(px: &[Rgb], w: usize, h: usize) -> Option<usize> {
 }
 
 // ------------------------------------------------------------------ scene
+/// A twinkling star on a night sky: grid position, twinkle speed and phase.
 struct Star {
     x: usize,
     y: usize,
     f: f32,
     ph: f32,
 }
+/// A slowly floating speck of light (dust, pollen, fireflies): position in 0..1 of the
+/// grid, drift speed and phase.
 struct Mote {
     x: f32,
     y: f32,
     f: f32,
     ph: f32,
 }
+/// A bird crossing the sky: where along its loop it starts, its height, and wing phase.
 struct Bird {
     off: f32,
     y: f32,
     ph: f32,
 }
 
+/// One landscape, prepared for one screen size. Building it (`new`) is the slow part, done
+/// once; drawing a frame (`render_damage`) is the fast part, done 30 times a second.
+///
+/// The picture lives on a small "grid" (`gw` x `gh` cells, each one a big pixel on screen).
+/// All the effects are drawn on the grid, then the grid is scaled up to the screen.
 pub struct Scene {
+    /// Screen size in pixels.
     pub sw: usize,
     pub sh: usize,
+    /// Grid size in cells (big pixels). The pixelation slider picks this.
     pub gw: usize,
     pub gh: usize,
+    /// The photo on the grid after grading: the starting point of every frame.
     start: Vec<Rgb>,
     /// Animated GIF frames on the grid (graded), with the time each one ends; empty for stills.
     anim: Vec<(Vec<[u8; 3]>, f32)>,
+    /// Which GIF frame is in `start` right now.
     anim_frame: usize,
+    /// Per grid cell: is this sky? (from `find_sky`)
     sky: Vec<bool>,
+    /// First grid row of a lake reflection, if there is one (from `find_water_line`).
     water_from: Option<usize>,
+    /// Horizon: the typical lowest sky row. Birds and clouds stay above it.
     hz: f32,
+    /// The palette the picture is snapped to, already pulled onto the FM colour ramps.
     pal: Vec<Rgb>,
+    /// Nearest-palette lookup: index `r>>3 << 10 | g>>3 << 5 | b>>3` gives the palette
+    /// entry. 32 KB, built once, so snapping a colour is one table read instead of a search.
     lut: Vec<u8>,
+    /// How far apart neighbouring palette colours are, which sets how strong the dither is.
     dither_step: f32,
+    /// Per grid cell: how much of the sun/moon glow reaches it (0..1); None when there is
+    /// no clear bright light in the sky.
     glow: Option<Vec<f32>>,
     /// Grid rectangle (x0, y0, x1, y1), end exclusive, outside which the glow is zero.
     glow_box: (usize, usize, usize, usize),
     stars: Vec<Star>,
     motes: Vec<Mote>,
     birds: Vec<Bird>,
+    /// Sparkles on the water: grid index and twinkle phase.
     glints: Vec<(usize, f32)>,
+    /// Logo coverage per grid cell (0..1), centred; None when the logo is off.
     logo: Option<Vec<f32>>,
+    /// Scratch: which cells form the logo's outline this frame.
     logo_rim: Vec<bool>,
     look: Look,
     logo_cfg: Logo,
+    /// Differs per monitor and per landscape so two screens never look identical.
     seed: u32,
+    /// Scratch: the grid in float colour while effects are added.
     work: Vec<Rgb>,
+    /// The finished grid for this frame, packed colours.
     grid: Vec<u32>,
+    /// Scratch: cloud density on a coarse `cw` x `ch` grid (clouds are soft, so a coarse
+    /// grid looks the same and costs far less).
     cloud: Vec<f32>,
     cw: usize,
     ch: usize,
+    /// For each screen column, which grid column it shows (precomputed for `upscale`).
     xmap: Vec<usize>,
     /// When nothing on the grid moves (no clouds, water, glow, stars, birds, ...), the stylized
     /// grid is the same every frame: it is kept here and reused instead of recomputed.
@@ -598,19 +744,30 @@ pub fn pixel_size(pixelation: f32) -> f32 {
 }
 
 impl Scene {
+    /// Prepare `src` for a `sw` x `sh` screen. Takes tens of milliseconds for a photo (more
+    /// for a long GIF), so the player calls it on a loader thread, never mid-frame.
+    ///
+    /// Steps: pick the grid size from the pixelation slider; crop the photo to the screen's
+    /// shape; analyse a 320-wide copy (sky, water, palette, sun); shrink the photo onto the
+    /// grid and grade it; build the palette lookup table; place stars, motes, birds, glints
+    /// and the logo. Everything random is seeded, so the same landscape on the same screen
+    /// always looks the same.
     pub fn new(src: &Source, logo: Option<&LogoArt>, sw: usize, sh: usize, look: &Look, logo_cfg: &Logo, seed: u32) -> Scene {
         let sw = sw.max(8);
         let sh = sh.max(8);
         let aspect = sw as f32 / sh as f32;
+        // big-pixel size on screen; scaled with the screen height so a 4K screen and a 1080p
+        // screen show the same amount of detail
         let px = pixel_size(look.pixelation) * sh as f32 / 1080.0;
-        let gw = ((sw as f32 / px.max(1.0)).round() as usize).clamp(16, sw.min(2560));
+        // (16.min(sw): a window can be resized narrower than 16 px, and clamp panics if min > max)
+        let gw = ((sw as f32 / px.max(1.0)).round() as usize).clamp(16.min(sw), sw.min(2560));
         let gh = ((gw as f32 / aspect).round() as usize).max(9);
         let cropped = crop_to_aspect(&src.img, aspect);
 
         // analysis at a fixed small size
         let aw = 320usize;
         let ah = ((aw as f32 / aspect).round() as usize).max(8);
-        let small = image::imageops::resize(&cropped, aw as u32, ah as u32, FilterType::Triangle);
+        let small = image::imageops::resize(&*cropped, aw as u32, ah as u32, FilterType::Triangle);
         let small_v = to_vec(&small);
         let sky_a = find_sky(&small_v, aw, ah);
         let water_a = if look.water { find_water_line(&small_v, aw, ah) } else { None };
@@ -646,7 +803,7 @@ impl Scene {
             .collect();
 
         // grid
-        let grid_img = image::imageops::resize(&cropped, gw as u32, gh as u32, FilterType::Triangle);
+        let grid_img = image::imageops::resize(&*cropped, gw as u32, gh as u32, FilterType::Triangle);
         let photo = to_vec(&grid_img);
         let s = look.stylize.clamp(0.0, 1.0);
         let start: Vec<Rgb> = photo.iter().map(|&c| mix(c, grade(c), s)).collect();
@@ -661,7 +818,7 @@ impl Scene {
         for chunk in src.frames.chunks(step) {
             let (img, _) = &chunk[0];
             let secs: f32 = chunk.iter().map(|f| f.1).sum();
-            let g = image::imageops::resize(&crop_to_aspect(img, aspect), gw as u32, gh as u32, FilterType::Triangle);
+            let g = image::imageops::resize(&*crop_to_aspect(img, aspect), gw as u32, gh as u32, FilterType::Triangle);
             let cells = g
                 .pixels()
                 .map(|p| {
@@ -690,7 +847,8 @@ impl Scene {
         let sky_mean = if sky_l.is_empty() { 128.0 } else { sky_l.iter().sum::<f32>() / sky_l.len() as f32 };
         let night = sky_mean < 95.0;
 
-        // palette lookup table, 5 bits per channel
+        // palette lookup table, 5 bits per channel: for each of the 32768 colour boxes, which
+        // palette entry is nearest to the middle of the box
         let mut lut = vec![0u8; 32 * 32 * 32];
         for (i, e) in lut.iter_mut().enumerate() {
             let c = [((i >> 10) & 31) as f32 * 8.0 + 4.0, ((i >> 5) & 31) as f32 * 8.0 + 4.0, (i & 31) as f32 * 8.0 + 4.0];
@@ -755,7 +913,9 @@ impl Scene {
             }
         }
 
-        let mut rng = seed.wrapping_mul(2654435761);
+        // a small xorshift generator, seeded per scene, for placing things once
+        // (xorshift is stuck at 0 forever if it starts there, hence the max)
+        let mut rng = seed.wrapping_mul(2654435761).max(1);
         let mut rnd = move || {
             rng ^= rng << 13;
             rng ^= rng >> 17;
@@ -888,6 +1048,19 @@ impl Scene {
     /// rectangles that changed, or None when the whole frame should be treated as new.
     /// When `out` holds the last frame and the picture is still, only the parts that move
     /// (the sun glow, glitches and code tears) are redrawn.
+    ///
+    /// The order of work in a frame:
+    /// 1. If this is a GIF, put the frame for time `t` into `start`.
+    /// 2. Build the grid: either reuse the cached still grid (and redo only the glow box), or
+    ///    run `build_grid` (water, clouds, glow, glints, stars, logo, birds, motes, wind,
+    ///    then stylize).
+    /// 3. Sparkles on top of the grid (after stylize, so they stay crisp).
+    /// 4. To the screen: either text cells (`ascii`), reusing a cached text picture when the
+    ///    grid is still, or a plain `upscale` plus any glitch cells.
+    /// 5. Breakthrough effects on top of the screen.
+    ///
+    /// The returned rectangles let the window code send only the changed parts of the screen
+    /// to the compositor, which matters on a 4K screen where a full frame is 33 MB.
     pub fn render_damage(&mut self, t: f32, out: &mut [u32], out_has_last: bool) -> Option<Vec<Rect>> {
         let (gw, gh) = (self.gw, self.gh);
         let unit = gw as f32 / 480.0; // effect sizes are tuned for a 480-wide grid
@@ -1054,7 +1227,9 @@ impl Scene {
         let tau = std::f32::consts::TAU;
         self.work.copy_from_slice(&self.start);
 
-        // water: each row slides sideways on slow sine waves, deeper rows move more
+        // water: each row slides sideways on slow sine waves, deeper rows move more. Two
+        // waves at different speeds and directions add up to a pattern that never visibly
+        // repeats. Rows wrap around at the edges, so nothing has to be invented.
         if let Some(wf) = self.water_from {
             let start = &self.start;
             let span = (gh - wf).max(1) as f32;
@@ -1073,7 +1248,10 @@ impl Scene {
             });
         }
 
-        // clouds: wrap-around noise drifting slowly, lightening the sky
+        // clouds: wrap-around noise drifting slowly, lightening the sky. The noise is worked
+        // out on the coarse cloud grid (at most 240 wide) and smoothly interpolated onto the
+        // real grid; `band` keeps clouds in a strip above the horizon instead of everywhere,
+        // and `thr` (from the clouds slider) decides how much of the noise becomes cloud.
         if self.look.clouds > 0.0 {
             let (cw, ch) = (self.cw, self.ch);
             let period = 4i64;
@@ -1182,10 +1360,9 @@ impl Scene {
                         }
                     }
                 }
-                for i in 0..gw * gh {
-                    if rim[i] {
-                        let c = self.work[i];
-                        self.work[i] = [c[0] * 0.62, c[1] * 0.62, c[2] * 0.62];
+                for (c, &on) in self.work.iter_mut().zip(rim.iter()) {
+                    if on {
+                        *c = [c[0] * 0.62, c[1] * 0.62, c[2] * 0.62];
                     }
                 }
             }
@@ -1548,6 +1725,10 @@ impl Scene {
         }
     }
 
+    /// Scale the grid up to the screen with hard edges ("nearest neighbour"): each screen
+    /// pixel takes the colour of the grid cell it falls in. Bands of 16 screen rows are done
+    /// on different threads. Most screen rows repeat the row above (a big pixel is many
+    /// rows tall), and those are copied with one `memcpy` instead of looked up pixel by pixel.
     fn upscale(&self, out: &mut [u32]) {
         let (sw, sh, gw, gh) = (self.sw, self.sh, self.gw, self.gh);
         let (grid, xmap) = (&self.grid, &self.xmap);
@@ -1585,6 +1766,10 @@ impl Scene {
         self.ascii_in(out, t, true, base, 0.0, cells)
     }
 
+    /// The shared worker behind `ascii` and `ascii_cells`. Text cells are 8x8 font pixels,
+    /// each `f` screen pixels wide (so a cell is 8, 16, 24... screen pixels, growing with the
+    /// screen height). One band of cell rows per thread. A cell's character comes from the
+    /// brightness of the grid under its centre, through the ramp `" .:-=+*#%@"`.
     fn ascii_in(&self, out: &mut [u32], t: f32, from_grid: bool, base: f32, glitch: f32, cells: Option<(usize, usize, usize, usize)>) {
         let (ccx0, ccy0, ccx1, ccy1) = cells.unwrap_or((0, 0, usize::MAX, usize::MAX));
         let (sw, sh) = (self.sw, self.sh);
@@ -1707,6 +1892,9 @@ fn stylize_px(c: Rgb, x: usize, y: usize, s: f32, dstep: f32, pal: &[Rgb], lut: 
 }
 
 // ------------------------------------------------------------------ text (for messages)
+/// Draw `text` centred on (cx, cy) with the built-in 8x8 font, each font pixel `scale`
+/// screen pixels wide. Used for the "Add landscapes..." and error messages.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_text(out: &mut [u32], sw: usize, sh: usize, text: &str, cx: usize, cy: usize, scale: usize, color: u32) {
     let w = text.len() * 8 * scale;
     let x0 = cx.saturating_sub(w / 2);

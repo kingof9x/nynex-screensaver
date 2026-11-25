@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>nynex screensaver</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="nynex turns your landscape photos into slowly animated pixel-art and ASCII scenes, as a screensaver and live wallpaper for Windows and Omarchy Linux.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one centred column of 68rem; the app's own palette (cream paper, clay, slate, sage) in
+   light mode and its night palette in dark mode. Pixel display type for headings, Plex for text. */
+:root {
+  --paper: #fbf8f2;
+  --paper-2: #f3ebe0;
+  --ink: #2a1d2c;
+  --ink-soft: #5d4f58;
+  --clay: #a8543c;
+  --clay-bright: #d97757;
+  --slate: #4f5d6e;
+  --sage: #56603f;
+  --rule: #e3d6c6;
+  --code-bg: #141413;
+  --code-fg: #f6ecdc;
+  --font-display: "Pixelify Sans", "Courier New", monospace;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #110d13; --paper-2: #1b151d; --ink: #f6ecdc; --ink-soft: #c2b3a6;
+    --clay: #e3a98c; --clay-bright: #d97757; --slate: #9eadba; --sage: #a0aa85; --rule: #2e2530;
+    --code-bg: #08060a; --code-fg: #f6ecdc; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #110d13; --paper-2: #1b151d; --ink: #f6ecdc; --ink-soft: #c2b3a6;
+  --clay: #e3a98c; --clay-bright: #d97757; --slate: #9eadba; --sage: #a0aa85; --rule: #2e2530;
+  --code-bg: #08060a; --code-fg: #f6ecdc; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font: 400 1.0625rem/1.6 var(--font-body);
+}
+img { max-width: 100%; display: block; }
+a { color: var(--clay); text-underline-offset: 0.18em; }
+a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid var(--clay-bright); outline-offset: 2px; }
+.wrap {
+  max-width: 68rem; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+h1, h2, h3 { font-family: var(--font-display); font-weight: 700; line-height: 1.1; text-wrap: balance; margin: 0; }
+h2 { font-size: clamp(1.6rem, 3.2vw, 2.2rem); }
+h3 { font-size: 1.2rem; font-weight: 500; }
+p { margin: 0; max-width: 65ch; }
+.eyebrow { font: 500 0.78rem/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); }
+code, kbd { font-family: var(--font-mono); font-size: 0.9em; }
+pre {
+  margin: 0; background: var(--code-bg); color: var(--code-fg); border-radius: 4px;
+  padding: 1rem 1.1rem; overflow-x: auto; font: 400 0.9rem/1.55 var(--font-mono);
+}
+
+/* top bar */
+.bar { display: flex; flex-wrap: wrap; gap: 0.5rem 1.4rem; align-items: center; justify-content: space-between; padding-block: 1.1rem; }
+.logo { font: 700 1.5rem/1 var(--font-display); color: var(--ink); text-decoration: none; letter-spacing: 0.02em; }
+.logo span { color: var(--clay-bright); }
+.bar nav { display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem; font-size: 0.95rem; }
+.bar nav a { color: var(--ink-soft); text-decoration: none; }
+.bar nav a:hover { color: var(--clay); text-decoration: underline; }
+
+/* hero */
+.hero { display: grid; gap: 1.6rem; padding-block: 1.5rem 3rem; }
+.hero h1 { font-size: clamp(2.3rem, 6vw, 4.2rem); max-width: 18ch; }
+.hero h1 em { font-style: normal; color: var(--clay-bright); }
+.hero .lede { font-size: 1.2rem; color: var(--ink-soft); }
+.screen {
+  border: 6px solid var(--ink); border-radius: 6px; background: var(--ink);
+  image-rendering: pixelated; aspect-ratio: 16 / 9; width: 100%; max-width: 100%; object-fit: cover;
+}
+.cta { display: flex; flex-wrap: wrap; gap: 0.7rem; }
+.btn {
+  display: inline-block; padding: 0.7rem 1.1rem; border: 2px solid var(--ink); border-radius: 3px;
+  font: 500 1rem/1 var(--font-display); text-decoration: none; color: var(--ink); background: transparent;
+  box-shadow: 3px 3px 0 var(--ink); transition: transform 0.08s, box-shadow 0.08s;
+}
+.btn.primary { background: var(--clay-bright); color: #1a1013; border-color: #1a1013; box-shadow: 3px 3px 0 #1a1013; }
+.btn:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--ink); }
+.btn.primary:hover { box-shadow: 4px 4px 0 #1a1013; }
+.btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--ink); }
+
+section { padding-block: 3rem; border-top: 2px dashed var(--rule); }
+.head { display: grid; gap: 0.6rem; margin-bottom: 1.6rem; }
+
+/* before / after */
+.compare { position: relative; width: 100%; aspect-ratio: 16 / 9; border: 6px solid var(--ink); border-radius: 6px; overflow: hidden; background: var(--ink); }
+.compare img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.compare .after { image-rendering: pixelated; clip-path: inset(0 0 0 var(--cut, 50%)); }
+.compare .handle { position: absolute; top: 0; bottom: 0; left: var(--cut, 50%); width: 3px; margin-left: -1px; background: var(--paper); box-shadow: 0 0 0 1px rgba(0,0,0,0.35); pointer-events: none; }
+.compare .tag { position: absolute; bottom: 0.6rem; font: 500 0.75rem/1 var(--font-mono); padding: 0.35rem 0.5rem; background: rgba(20, 20, 19, 0.75); color: #f6ecdc; border-radius: 2px; }
+.compare .tag.l { left: 0.6rem; } .compare .tag.r { right: 0.6rem; }
+.compare input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: ew-resize; margin: 0; }
+.hint { margin-top: 0.6rem; font-size: 0.9rem; color: var(--ink-soft); }
+
+/* gallery */
+.gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr)); gap: 1.4rem; }
+.gallery figure { margin: 0; display: grid; gap: 0.55rem; align-content: start; }
+.gallery img { border: 4px solid var(--ink); border-radius: 4px; image-rendering: pixelated; aspect-ratio: 16 / 9; object-fit: cover; width: 100%; }
+figcaption { font-size: 0.95rem; color: var(--ink-soft); }
+figcaption b { color: var(--ink); font-weight: 600; }
+
+/* platforms */
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 2rem; align-items: start; }
+.two > * { min-width: 0; }
+.plat { display: grid; gap: 0.8rem; }
+.plat ul { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.35rem; }
+.shot { border: 4px solid var(--ink); border-radius: 4px; }
+
+/* numbers */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); gap: 1rem; margin-bottom: 1.6rem; }
+.stat { border: 2px solid var(--ink); border-radius: 3px; padding: 1rem; display: grid; gap: 0.3rem; background: var(--paper-2); }
+.stat .n { font: 700 2rem/1 var(--font-display); color: var(--clay); font-variant-numeric: tabular-nums; }
+.stat .l { font-size: 0.92rem; color: var(--ink-soft); }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; min-width: 34rem; font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font: 500 0.78rem/1.2 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-soft); }
+td.num { text-align: right; font-family: var(--font-mono); }
+.note { font-size: 0.9rem; color: var(--ink-soft); margin-top: 0.9rem; }
+
+/* steps */
+.steps { counter-reset: s; display: grid; gap: 0.9rem; margin: 0; padding: 0; list-style: none; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 2.2rem 1fr; gap: 0.6rem; align-items: start; }
+.steps li::before { content: counter(s); font: 700 1.1rem/2rem var(--font-display); width: 2rem; height: 2rem; text-align: center; background: var(--ink); color: var(--paper); border-radius: 2px; }
+.steps li > div { min-width: 0; padding-top: 0.2rem; }
+
+.how { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1.4rem; }
+.how div { display: grid; gap: 0.4rem; align-content: start; }
+.how .k { font: 500 0.8rem/1 var(--font-mono); color: var(--clay); }
+
+.slides-cta { display: grid; gap: 1rem; padding: 1.6rem; border: 3px solid var(--ink); border-radius: 4px; background: var(--paper-2); box-shadow: 6px 6px 0 var(--clay-bright); }
+
+footer { padding-block: 2.5rem 3rem; border-top: 2px dashed var(--rule); font-size: 0.9rem; color: var(--ink-soft); display: flex; flex-wrap: wrap; gap: 0.6rem 1.4rem; justify-content: space-between; }
+
+@media (min-width: 60rem) {
+  .hero { grid-template-columns: 1fr 1.35fr; align-items: center; padding-block: 2.5rem 4rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn { transition: none; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="bar">
+    <a class="logo" href="#top">nynex<span>_</span></a>
+    <nav aria-label="Sections">
+      <a href="#looks">Looks</a>
+      <a href="#where">Where it runs</a>
+      <a href="#light">How light it is</a>
+      <a href="#install">Install</a>
+      <a href="presentation.html">How it works (slides)</a>
+      <a href="https://github.com/kingof9x/nynex-screensaver">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="hero" id="top">
+    <div style="display:grid;gap:1.2rem;min-width:0">
+      <p class="eyebrow">Screensaver and live wallpaper · Windows and Omarchy Linux</p>
+      <h1>Your photos, as <em>slow pixel art</em>.</h1>
+      <p class="lede">nynex turns landscape photos into quietly animated scenes: clouds drift, lakes ripple and glint, the sun breathes, birds glide past, and now and then the picture tears open to show the code underneath.</p>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/kingof9x/nynex-screensaver/releases/latest">Download</a>
+        <a class="btn" href="presentation.html">See how it works</a>
+      </div>
+    </div>
+    <img class="screen" src="screenshots/demo.gif" width="960" height="540" alt="An animated Yosemite river scene in nynex's stylized look: cream sky, clay cliffs, a rippling reflection and sparkles.">
+  </div>
+</div>
+
+<div class="wrap">
+  <section aria-labelledby="ba">
+    <div class="head">
+      <p class="eyebrow">Before and after</p>
+      <h2 id="ba">Drag across the picture</h2>
+      <p>Left of the line is the photo. Right of it is what nynex draws: the same scene on a grid of big pixels, in 16 colours with a fine dither, warmed toward cream and clay.</p>
+    </div>
+    <div class="compare" id="compare">
+      <img src="screenshots/photo-original.jpg" alt="The original photo: a Yosemite river at dusk with cliffs reflected in still water." width="1280" height="720">
+      <img class="after" src="screenshots/hero.png" alt="The same scene drawn by nynex in its stylized pixel-art look." width="1920" height="1080">
+      <div class="handle"></div>
+      <span class="tag l">photo</span><span class="tag r">nynex</span>
+      <label for="cut" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Move the dividing line</label>
+      <input id="cut" type="range" min="0" max="100" value="50">
+    </div>
+    <p class="hint">Use the arrow keys after clicking the picture to move the line.</p>
+  </section>
+
+  <section id="looks" aria-labelledby="looks-h">
+    <div class="head">
+      <p class="eyebrow">Looks</p>
+      <h2 id="looks-h">One photo, many moods</h2>
+      <p>Every look is a handful of sliders in the settings app. Each landscape can share the common look or have its own.</p>
+    </div>
+    <div class="gallery">
+      <figure><img src="screenshots/look-full-colour.png" alt="Tunnel View in Yosemite in full colour, lightly pixelated." loading="lazy" width="1920" height="1080"><figcaption><b>Full colour.</b> The photo's own colours, on a pixel grid.</figcaption></figure>
+      <figure><img src="screenshots/look-chunky.png" alt="Half Dome drawn in very large pixels in cream and pale blue." loading="lazy" width="1920" height="1080"><figcaption><b>Chunky.</b> Pixelation all the way up.</figcaption></figure>
+      <figure><img src="screenshots/look-ascii.png" alt="A valley scene drawn entirely in coloured text characters." loading="lazy" width="1920" height="1080"><figcaption><b>ASCII.</b> Each cell becomes a character picked by brightness.</figcaption></figure>
+      <figure><img src="screenshots/look-breakthrough.png" alt="A sunset lake with a torn band showing a hex dump and falling columns of code." loading="lazy" width="1920" height="1080"><figcaption><b>Code breaking through.</b> nynex's own source, a hex dump or a crash log, torn into the picture.</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="where" aria-labelledby="where-h">
+    <div class="head">
+      <p class="eyebrow">Where it runs</p>
+      <h2 id="where-h">Screensaver, wallpaper, or just a window</h2>
+    </div>
+    <div class="two">
+      <div class="plat">
+        <h3>Windows 10 and 11</h3>
+        <ul>
+          <li><b>Screensaver</b>: pick a wait time and click <i>Use as my screensaver</i>. No trip to Windows' Screen Saver Settings needed.</li>
+          <li><b>Wallpaper</b>: plays behind the desktop icons on every monitor, and pauses on a screen covered by a maximised window.</li>
+          <li><b>Start with Windows</b>, play in a window, or full screen. Left and Right arrows step through your landscapes.</li>
+        </ul>
+        <img class="shot" src="screenshots/settings-app.png" alt="The nynex settings app: a list of landscapes, a live preview, and sliders for display time, transition, look and motion." loading="lazy" width="1440" height="880">
+      </div>
+      <div class="plat">
+        <h3>Omarchy and other Wayland desktops</h3>
+        <ul>
+          <li><b>Screensaver</b>: hooks into Omarchy's idle screensaver, keeping Omarchy's lock timer and window rules working.</li>
+          <li><b>Wallpaper</b>: a layer-shell surface on every monitor, under your windows. It only draws when the compositor asks for a frame.</li>
+          <li>Works on Hyprland, Sway, niri and other wlroots-style compositors.</li>
+        </ul>
+        <img class="shot" src="screenshots/wallpaper-wayland.png" alt="nynex running as a live wallpaper behind a terminal window on a Wayland desktop." loading="lazy" width="1920" height="1080">
+      </div>
+    </div>
+  </section>
+
+  <section id="light" aria-labelledby="light-h">
+    <div class="head">
+      <p class="eyebrow">How light it is</p>
+      <h2 id="light-h">No graphics card, no runtime, one file</h2>
+      <p>nynex is a single program of about 5,000 lines of Rust. Every frame is drawn on the CPU, which means it behaves the same in a VM, over remote desktop or on a laptop with flaky drivers. It is built to idle politely.</p>
+    </div>
+    <div class="stats">
+      <div class="stat"><span class="n" data-k="cpu">~5%</span><span class="l">of one CPU core for the 1080p wallpaper at 30 fps</span></div>
+      <div class="stat"><span class="n" data-k="mem">~45 MB</span><span class="l">memory in use on Linux, settled, 1080p wallpaper</span></div>
+      <div class="stat"><span class="n">12 MB</span><span class="l">the whole Linux program; 9 MB on Windows</span></div>
+      <div class="stat"><span class="n">0</span><span class="l">installers, services or runtimes needed</span></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <caption style="text-align:left;caption-side:top;padding-bottom:0.6rem;font-weight:600">Drawing a 1080p slideshow, measured on the same Linux machine</caption>
+        <thead><tr><th>Version</th><th>Speed</th><th>Memory, settled</th><th>Memory, peak</th></tr></thead>
+        <tbody id="bench-rows">
+          <tr><td>Python prototype (<code>fmscape.py</code>)</td><td class="num">18 fps flat out</td><td class="num">88–126 MB</td><td class="num">260 MB</td></tr>
+          <tr><td>nynex 0.9.2 (Rust)</td><td class="num">30 fps, ~5% CPU</td><td class="num">103–132 MB</td><td class="num">230 MB</td></tr>
+          <tr><td>nynex, this version</td><td class="num">30 fps, ~5% CPU</td><td class="num">35–60 MB</td><td class="num">~110 MB</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Memory is the resident size Linux reports (RSS). Windows Task Manager shows a different number by default (the private working set, which leaves out shared libraries and memory Windows has trimmed), so it reads much lower for the same program. Full method and raw numbers: <a href="https://github.com/kingof9x/nynex-screensaver/blob/main/docs/BENCHMARKS.md">BENCHMARKS.md</a>.</p>
+  </section>
+
+  <section aria-labelledby="how-h">
+    <div class="head">
+      <p class="eyebrow">How it works</p>
+      <h2 id="how-h">Five steps, thirty times a second</h2>
+    </div>
+    <div class="how">
+      <div><span class="k">once per photo</span><h3>Shrink</h3><p>Crop to your screen's shape and shrink to a grid of big pixels: about 41,000 cells instead of 2 million pixels.</p></div>
+      <div><span class="k">once per photo</span><h3>Understand</h3><p>Find the sky with a paint-bucket flood fill, find a lake by checking whether the bottom half mirrors the top, and pick the 16 colours that best represent the picture.</p></div>
+      <div><span class="k">every frame</span><h3>Animate</h3><p>Slide the water rows on slow waves, drift clouds made of noise, flap the birds, twinkle the stars.</p></div>
+      <div><span class="k">every frame</span><h3>Stylize</h3><p>Snap each cell to the palette through a 32 KB lookup table, with a 1990s ordered dither.</p></div>
+      <div><span class="k">every frame</span><h3>Show</h3><p>Scale up with hard edges on four CPU cores, and send the screen only the parts that changed.</p></div>
+    </div>
+    <div class="slides-cta" style="margin-top:2rem">
+      <h3>Want the long version, without needing to be a programmer?</h3>
+      <p>A slide tour for power users and sysadmins: what a flood fill has to do with MS Paint, why the lake test is basically <code>diff</code>, and how a program can show its own source code.</p>
+      <div class="cta"><a class="btn primary" href="presentation.html">Open the slides</a><a class="btn" href="https://github.com/kingof9x/nynex-screensaver/blob/main/docs/ARCHITECTURE.md">Read the architecture</a></div>
+    </div>
+  </section>
+
+  <section id="install" aria-labelledby="install-h">
+    <div class="head">
+      <p class="eyebrow">Install</p>
+      <h2 id="install-h">Two minutes, no admin rights on Windows</h2>
+    </div>
+    <div class="two">
+      <div class="plat">
+        <h3>Windows</h3>
+        <ol class="steps">
+          <li><div>Download <code>nynex.exe</code> from the <a href="https://github.com/kingof9x/nynex-screensaver/releases/latest">latest release</a> and open it. If Windows warns that the file isn't signed, click <i>More info</i>, then <i>Run anyway</i>.</div></li>
+          <li><div>Add your landscape photos and tune the look. The preview updates as you go.</div></li>
+          <li><div>Pick a wait time and click <i>Use as my screensaver</i>, or start it as your wallpaper.</div></li>
+        </ol>
+      </div>
+      <div class="plat">
+        <h3>Omarchy</h3>
+        <ol class="steps">
+          <li><div>Run the installer from the <a href="https://github.com/kingof9x/omarchy-pixelbook-go/tree/main/nynex">omarchy-pixelbook-go</a> repo. It puts <code>nynex</code> on your PATH, adds it to the launcher and hooks the idle screensaver.</div></li>
+          <li><div>Open nynex from the launcher, add photos, and choose <i>My screensaver: nynex</i>.</div></li>
+          <li><div>Or by hand, on any Wayland desktop:</div></li>
+        </ol>
+        <pre>nynex --wallpaper                 # live wallpaper
+nynex --screensaver               # one full-screen window
+nynex --render in.jpg out.png     # one frame to a file</pre>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="wrap">
+  <footer>
+    <span>nynex screensaver · by kingof9x</span>
+    <span><a href="https://github.com/kingof9x/nynex-screensaver">Source on GitHub</a> · <a href="presentation.html">Slides</a> · <a href="https://github.com/kingof9x/nynex-screensaver/blob/main/docs/REVIEW.md">Review guide</a></span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  var box = document.getElementById('compare');
+  var cut = document.getElementById('cut');
+  function set() { box.style.setProperty('--cut', cut.value + '%'); }
+  cut.addEventListener('input', set);
+  set();
+})();
+</script>
+</body>
+</html>

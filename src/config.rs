@@ -91,6 +91,39 @@ pub struct Look {
     pub breakthrough: f32,
 }
 
+/// `v` limited to `lo..=hi`, or `default` when it isn't a finite number (NaN or infinity,
+/// which `clamp` would pass straight through).
+fn fin(v: f32, lo: f32, hi: f32, default: f32) -> f32 {
+    if v.is_finite() { v.clamp(lo, hi) } else { default }
+}
+
+impl Look {
+    fn sanitize(&mut self) {
+        let d = Look::default();
+        self.pixelation = fin(self.pixelation, 0.0, 1.0, d.pixelation);
+        self.ascii = fin(self.ascii, 0.0, 1.0, d.ascii);
+        self.stylize = fin(self.stylize, 0.0, 1.0, d.stylize);
+        self.colors = self.colors.clamp(2, 64);
+        self.dither = fin(self.dither, 0.0, 2.0, d.dither);
+        self.clouds = fin(self.clouds, 0.0, 1.0, d.clouds);
+        self.birds = self.birds.min(64);
+        self.motes = self.motes.min(400);
+        self.glitch = fin(self.glitch, 0.0, 1.0, d.glitch);
+        self.sparkles = self.sparkles.min(400);
+        self.wind = fin(self.wind, 0.0, 1.0, d.wind);
+        self.breakthrough = fin(self.breakthrough, 0.0, 1.0, d.breakthrough);
+    }
+}
+
+impl Logo {
+    fn sanitize(&mut self) {
+        let d = Logo::default();
+        self.size = fin(self.size, 0.01, 1.0, d.size);
+        self.opacity = fin(self.opacity, 0.0, 1.0, d.opacity);
+        self.pulse = fin(self.pulse, 0.0, 1.0, d.pulse);
+    }
+}
+
 impl Default for Look {
     fn default() -> Self {
         Look {
@@ -169,6 +202,9 @@ fn yes() -> bool {
     true
 }
 
+/// The app's own folder: `%APPDATA%\nynex-screensaver` on Windows,
+/// `~/.config/nynex-screensaver` on Linux. Holds the config, the landscape library, the
+/// crash log and the wallpaper's stop file.
 pub fn app_dir() -> PathBuf {
     dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("nynex-screensaver")
 }
@@ -188,13 +224,51 @@ impl Config {
         Self::load_from(&config_path())
     }
 
+    /// Read a config file. A missing file gives the defaults. A file that exists but can't be
+    /// parsed (hand-edited, truncated by a crash) is copied aside to `config.json.bad` first,
+    /// so pressing Save in the app afterwards can't silently wipe the user's landscape list.
+    /// Every value is then clamped to a sane range (see `sanitize`).
     pub fn load_from(path: &Path) -> Config {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        let Ok(text) = std::fs::read_to_string(path) else { return Config::default() };
+        let mut cfg = match serde_json::from_str::<Config>(&text) {
+            Ok(c) => c,
+            Err(e) => {
+                let bad = path.with_extension("json.bad");
+                if !bad.exists() {
+                    let _ = std::fs::copy(path, &bad);
+                }
+                eprintln!("{}: {e}; using the defaults (the file was kept as {})", path.display(), bad.display());
+                Config::default()
+            }
+        };
+        cfg.sanitize();
+        cfg
     }
 
+    /// Clamp every number to the range the app's sliders allow (with a little headroom), so a
+    /// hand-edited or corrupted config can't ask for a billion birds, a zero-length frame or NaN.
+    pub fn sanitize(&mut self) {
+        self.default_duration = fin(self.default_duration, 1.0, 86_400.0, 60.0);
+        self.transition_secs = fin(self.transition_secs, 0.05, 60.0, 2.0);
+        self.fps = self.fps.clamp(5, 60);
+        self.look.sanitize();
+        self.logo.sanitize();
+        for l in &mut self.landscapes {
+            if let Some(d) = &mut l.duration {
+                *d = fin(*d, 1.0, 86_400.0, 60.0);
+            }
+            if let Some(look) = &mut l.look {
+                look.sanitize();
+            }
+            if let Some(logo) = &mut l.logo {
+                logo.sanitize();
+            }
+        }
+    }
+
+    /// Write the config. It goes to `config.json.tmp` first and is then renamed over the real
+    /// file, so a crash or power cut mid-write leaves either the old file or the new one, never
+    /// half of each. (A running screensaver or wallpaper reads it only when it starts.)
     pub fn save(&self) -> std::io::Result<()> {
         let path = config_path();
         if let Some(dir) = path.parent() {
@@ -252,7 +326,7 @@ pub fn import_image(src: &Path) -> std::io::Result<PathBuf> {
             if img.width().max(img.height()) > MAX_IMPORT_SIDE {
                 let small = img.resize(MAX_IMPORT_SIDE, MAX_IMPORT_SIDE, image::imageops::FilterType::Lanczos3);
                 let dst = unique("jpg");
-                let rgb = image::DynamicImage::ImageRgb8(small.to_rgb8());
+                let rgb = image::DynamicImage::ImageRgb8(small.into_rgb8());
                 let file = std::fs::File::create(&dst)?;
                 let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(std::io::BufWriter::new(file), 92);
                 enc.encode_image(&rgb).map_err(std::io::Error::other)?;
@@ -268,10 +342,19 @@ pub fn import_image(src: &Path) -> std::io::Result<PathBuf> {
 /// Longest side kept when importing an image.
 pub const MAX_IMPORT_SIDE: u32 = 3840;
 
-/// Decode an image without the decoder's default memory limits (very large photos).
+/// Most memory one decode may use. The `image` crate's default (512 MB) refuses some real
+/// photos (a 100-megapixel 16-bit PNG needs about 800 MB); no limit at all would let a broken
+/// or hostile file that claims to be 100000x100000 pixels abort the whole program when the
+/// allocation fails. 2 GB is a middle ground.
+const MAX_DECODE_BYTES: u64 = 2 << 30;
+
+/// Decode an image with a larger memory limit than the decoder's default (very large photos).
+/// The name is historical: there is still a limit, `MAX_DECODE_BYTES`.
 pub fn decode_unlimited(path: &Path) -> Option<image::DynamicImage> {
     let mut r = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
-    r.no_limits();
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_DECODE_BYTES);
+    r.limits(limits);
     r.decode().ok()
 }
 
@@ -280,6 +363,27 @@ pub const IMAGE_EXTENSIONS: [&str; 8] = ["jpg", "jpeg", "png", "webp", "bmp", "g
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bad_config_is_kept_and_values_are_clamped() {
+        let dir = std::env::temp_dir().join(format!("nynex-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // broken JSON: defaults, and the original is kept next to it
+        let path = dir.join("config.json");
+        std::fs::write(&path, "{ \"landscapes\": [ oops").unwrap();
+        let cfg = Config::load_from(&path);
+        assert!(cfg.landscapes.is_empty());
+        assert!(dir.join("config.json.bad").exists());
+        // silly values are clamped
+        std::fs::write(&path, r#"{"fps": 100000, "default_duration": -5, "look": {"birds": 4000000000, "pixelation": 7.5, "colors": 0}}"#).unwrap();
+        let cfg = Config::load_from(&path);
+        assert_eq!(cfg.fps, 60);
+        assert_eq!(cfg.default_duration, 1.0);
+        assert_eq!(cfg.look.birds, 64);
+        assert_eq!(cfg.look.pixelation, 1.0);
+        assert_eq!(cfg.look.colors, 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn big_images_are_downscaled_on_import() {

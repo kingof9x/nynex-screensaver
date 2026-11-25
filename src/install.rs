@@ -26,6 +26,7 @@ pub fn scr_path() -> PathBuf {
 fn short_path(p: &Path) -> String {
     let long = wide(&p.display().to_string());
     let mut buf = vec![0u16; 1024];
+    // SAFETY: `long` is NUL-terminated and `buf` is writable for the length we pass.
     let n = unsafe { GetShortPathNameW(long.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
     if n == 0 || n >= buf.len() {
         return p.display().to_string();
@@ -37,6 +38,8 @@ fn reg_get(name: &str) -> Option<String> {
     let (key, val) = (wide(DESKTOP), wide(name));
     let mut buf = vec![0u16; 1024];
     let mut size = (buf.len() * 2) as u32;
+    // SAFETY: key and value names are NUL-terminated; `size` tells Windows how many bytes
+    // `buf` holds, and it fails (ERROR_MORE_DATA) rather than write past them.
     let r = unsafe {
         RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), val.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut size)
     };
@@ -49,6 +52,7 @@ fn reg_get(name: &str) -> Option<String> {
 
 fn reg_set(name: &str, value: &str) -> bool {
     let (key, val, data) = (wide(DESKTOP), wide(name), wide(value));
+    // SAFETY: all three strings are NUL-terminated and outlive the call; the length is in bytes.
     unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), val.as_ptr(), REG_SZ, data.as_ptr().cast(), (data.len() * 2) as u32) == 0 }
 }
 
@@ -56,6 +60,7 @@ fn reg_set(name: &str, value: &str) -> bool {
 pub fn status() -> (bool, u32) {
     let mut active: i32 = 0;
     let mut secs: u32 = 0;
+    // SAFETY: each call writes one i32/u32 into a local that outlives it.
     unsafe {
         SystemParametersInfoW(SPI_GETSCREENSAVEACTIVE, 0, (&mut active as *mut i32).cast(), 0);
         SystemParametersInfoW(SPI_GETSCREENSAVETIMEOUT, 0, (&mut secs as *mut u32).cast(), 0);
@@ -81,6 +86,7 @@ pub fn set_as_screensaver(minutes: u32) -> String {
         return "Windows refused the change (a work or school policy may control the screensaver).".into();
     }
     let flags = SPIF_UPDATEINIFILE | SPIF_SENDCHANGE;
+    // SAFETY: the SET calls take their value in the integer argument; the pointer is unused.
     let ok = unsafe {
         SystemParametersInfoW(SPI_SETSCREENSAVETIMEOUT, minutes.max(1) * 60, std::ptr::null_mut(), flags) != 0
             && SystemParametersInfoW(SPI_SETSCREENSAVEACTIVE, 1, std::ptr::null_mut(), flags) != 0
@@ -95,6 +101,7 @@ pub fn set_as_screensaver(minutes: u32) -> String {
 /// Switch the screensaver off and forget nynex as the chosen one.
 pub fn turn_off() -> String {
     let (key, val) = (wide(DESKTOP), wide("SCRNSAVE.EXE"));
+    // SAFETY: NUL-terminated names that outlive the calls; null pointer as documented for SET.
     unsafe {
         RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), val.as_ptr());
         SystemParametersInfoW(SPI_SETSCREENSAVEACTIVE, 0, std::ptr::null_mut(), SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);

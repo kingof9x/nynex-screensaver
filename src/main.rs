@@ -31,7 +31,19 @@ mod player;
 mod saver;
 mod scene;
 mod settings;
+#[cfg(test)]
+mod stress;
 mod wallpaper;
+
+/// Hand freed heap memory back to the system. Called after a big image or transition is
+/// dropped; glibc would otherwise keep it reserved. Does nothing on other platforms.
+pub fn trim_heap() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: malloc_trim only releases free pages; it is thread safe.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
 
 fn main() {
     // A GUI program has no console, so write crashes to a log the user can send us.
@@ -45,6 +57,14 @@ fn main() {
         });
         eprintln!("{msg}");
     }));
+    // glibc gives every thread its own heap ("arena") and rarely hands freed memory back,
+    // so a renderer that swaps 30 MB images every minute slowly bloats. Two arenas is plenty
+    // for us; this has to happen before any thread starts.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: mallopt only changes allocator settings and is called before other threads exist.
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
     // A few worker threads are plenty for a frame; more just spin and burn CPU between frames.
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 4);
     let _ = rayon::ThreadPoolBuilder::new().num_threads(threads).build_global();
@@ -123,11 +143,17 @@ fn render_cli(args: &[String]) {
                     h = b.parse().unwrap_or(h);
                 }
             }
-            "--config" => cfg = config::Config::load_from(std::path::Path::new(&args[i + 1])),
+            "--config" => {
+                if let Some(path) = args.get(i + 1) {
+                    cfg = config::Config::load_from(std::path::Path::new(path));
+                }
+            }
             _ => {}
         }
         i += 2;
     }
+    // a scene is at least 8x8 (see Scene::new), and 16384 is far past any real screen
+    let (w, h) = (w.clamp(8, 16384), h.clamp(8, 16384));
     let src = match scene::load_source(std::path::Path::new(input)) {
         Ok(s) => s,
         Err(e) => {
