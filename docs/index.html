@@ -143,6 +143,34 @@ td.num { text-align: right; font-family: var(--font-mono); }
 .how div { display: grid; gap: 0.4rem; align-content: start; }
 .how .k { font: 500 0.8rem/1 var(--font-mono); color: var(--clay); }
 
+/* "Inside nynex": the tour, one chapter after another down the page */
+pre .p { color: #d97757; } pre .c { color: #8f8478; }
+.chap { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 1.4rem 2.4rem; align-items: start; padding-block: 2.4rem; border-top: 1px solid var(--rule); }
+.chap:first-of-type { border-top: 0; padding-top: 0.6rem; }
+.chap > * { min-width: 0; }
+.chap > div { display: grid; gap: 0.8rem; align-content: start; }
+.chap.wide { grid-template-columns: 1fr; }
+.chap .k { font: 500 0.78rem/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--clay); }
+.chap h3 { font-size: clamp(1.3rem, 2.4vw, 1.65rem); font-weight: 700; }
+.chap em { font-style: normal; font-weight: 600; color: var(--clay); }
+.chap ul { margin: 0; padding-left: 1.15rem; display: grid; gap: 0.4rem; max-width: 65ch; }
+.pic { border: 4px solid var(--ink); border-radius: 4px; image-rendering: pixelated; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #000; display: block; }
+canvas.pic { height: auto; }
+.analogy { border-left: 4px solid var(--sage); padding: 0.3rem 0 0.3rem 0.9rem; max-width: 65ch; }
+.analogy b { display: block; color: var(--sage); font: 500 0.78rem/1.4 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; }
+.ctrl { display: flex; flex-wrap: wrap; gap: 0.6rem 1rem; align-items: center; font-size: 0.95rem; }
+.ctrl label { display: flex; gap: 0.5rem; align-items: center; }
+.ctrl input[type=range] { width: min(16rem, 60vw); accent-color: var(--clay-bright); }
+.ctrl input[type=number] { width: 5rem; font: inherit; padding: 0.25rem 0.4rem; border: 2px solid var(--rule); border-radius: 3px; background: var(--paper); color: var(--ink); }
+.chip { font: 500 0.85rem/1 var(--font-mono); padding: 0.4rem 0.55rem; background: var(--code-bg); color: var(--code-fg); border-radius: 3px; font-variant-numeric: tabular-nums; }
+button.btn { cursor: pointer; font-size: 0.95rem; padding: 0.55rem 0.9rem; }
+.flow { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 9.5rem), 1fr)); gap: 0.7rem; }
+.flow div { border: 2px solid var(--rule); border-radius: 4px; padding: 0.75rem; display: grid; gap: 0.25rem; align-content: start; background: var(--paper-2); }
+.flow .k { font-size: 0.7rem; color: var(--sage); }
+.flow h4 { margin: 0; font: 600 1rem/1.3 var(--font-body); }
+.flow p { font-size: 0.9rem; color: var(--ink-soft); }
+.small { font-size: 0.9rem; color: var(--ink-soft); }
+
 .slides-cta { display: grid; gap: 1rem; padding: 1.6rem; border: 3px solid var(--ink); border-radius: 4px; background: var(--paper-2); box-shadow: 6px 6px 0 var(--clay-bright); }
 
 footer { padding-block: 2.5rem 3rem; border-top: 2px dashed var(--rule); font-size: 0.9rem; color: var(--ink-soft); display: flex; flex-wrap: wrap; gap: 0.6rem 1.4rem; justify-content: space-between; }
@@ -162,9 +190,10 @@ footer { padding-block: 2.5rem 3rem; border-top: 2px dashed var(--rule); font-si
     <nav aria-label="Sections">
       <a href="#looks">Looks</a>
       <a href="#where">Where it runs</a>
+      <a href="#inside">How it works</a>
       <a href="#light">How light it is</a>
       <a href="#install">Install</a>
-      <a href="presentation.html">How it works (slides)</a>
+      <a href="code.html">The code, in detail</a>
       <a href="https://github.com/kingof9x/nynex-screensaver">GitHub</a>
     </nav>
   </header>
@@ -176,7 +205,7 @@ footer { padding-block: 2.5rem 3rem; border-top: 2px dashed var(--rule); font-si
       <p class="lede">nynex turns landscape photos into quietly animated scenes: clouds drift, lakes ripple and glint, the sun breathes, birds glide past, and now and then the picture tears open to show the code underneath.</p>
       <div class="cta">
         <a class="btn primary" href="https://github.com/kingof9x/nynex-screensaver/releases/latest">Download</a>
-        <a class="btn" href="presentation.html">See how it works</a>
+        <a class="btn" href="#inside">See how it works</a>
       </div>
     </div>
     <img class="screen" src="screenshots/demo.gif" width="960" height="540" alt="An animated Yosemite river scene in nynex's stylized look: cream sky, clay cliffs, a rippling reflection and sparkles.">
@@ -242,6 +271,241 @@ footer { padding-block: 2.5rem 3rem; border-top: 2px dashed var(--rule); font-si
     </div>
   </section>
 
+  <section id="inside" aria-labelledby="inside-h">
+    <div class="head">
+      <p class="eyebrow">How it works</p>
+      <h2 id="inside-h">How to paint a landscape thirty times a second</h2>
+      <p>For people who know their way around a terminal, a registry editor and a PATH, but don't write code. Each idea below comes with a tool you already use, and some of them you can try right here on the page.</p>
+    </div>
+
+    <div class="chap">
+      <div>
+        <span class="k">01 · The shape of it</span>
+        <h3>One file. Four jobs. Like BusyBox.</h3>
+        <p>BusyBox is one binary that acts as <code>ls</code>, <code>cp</code> or <code>sh</code> depending on how you call it. nynex does the same trick with its command line.</p>
+        <p>No installer, no service, no runtime, no graphics card needed. 12 MB on Linux. Copy it anywhere and run it.</p>
+      </div>
+      <pre><span class="p">$</span> nynex                 <span class="c"># settings app</span>
+<span class="p">$</span> nynex --screensaver   <span class="c"># quits on input</span>
+<span class="p">$</span> nynex --wallpaper     <span class="c"># behind windows</span>
+<span class="p">$</span> nynex --render a b    <span class="c"># frame to a file</span>
+<span class="p">C:\&gt;</span> nynex.scr /s        <span class="c"># Windows, on idle</span></pre>
+    </div>
+
+    <div class="chap">
+      <div>
+        <span class="k">02 · The big idea</span>
+        <h3>Don't paint the poster. Paint the thumbnail.</h3>
+        <p>A 1080p screen is <em>2,073,600</em> pixels. Doing clever things to each of them 30 times a second would cook your laptop.</p>
+        <p>So nynex shrinks the photo to a grid of big chunky "cells", about <em>270 × 152 = 41,000</em> of them, does all the clever work on that, and only at the very end blows it up to screen size.</p>
+        <div class="analogy"><b>Sysadmin version</b>You don't <code>grep</code> a 40 GB log every minute. You summarise it once, then query the summary.</div>
+      </div>
+      <div>
+        <canvas class="pic" id="pixCanvas" width="960" height="540" aria-label="The photo drawn on a grid of the chosen width"></canvas>
+        <div class="ctrl">
+          <label for="pixSlider">Grid width</label>
+          <input id="pixSlider" type="range" min="16" max="480" value="270">
+          <span class="chip" id="pixOut">270 × 152 = 41,040 cells</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="chap wide">
+      <div>
+        <span class="k">03 · The plan</span>
+        <h3>Slow once, fast forever</h3>
+        <p>The work splits into two piles: things that stay the same while a photo is on screen, and things that change every frame.</p>
+        <div class="flow">
+          <div><span class="k">once · ~50 ms</span><h4>Load</h4><p>Decode the JPEG on a side thread.</p></div>
+          <div><span class="k">once</span><h4>Shrink</h4><p>Crop to your screen shape, make the grid.</p></div>
+          <div><span class="k">once</span><h4>Understand</h4><p>Where's the sky? Is there a lake? Is it night?</p></div>
+          <div><span class="k">once</span><h4>Pick colours</h4><p>Choose the 16 that best fit this photo.</p></div>
+          <div><span class="k">every frame</span><h4>Animate</h4><p>Water, clouds, birds, stars, sparkles.</p></div>
+          <div><span class="k">every frame</span><h4>Stylize</h4><p>Snap to the 16 colours, add the dither.</p></div>
+          <div><span class="k">every frame</span><h4>Show</h4><p>Blow up to screen size, send what changed.</p></div>
+        </div>
+        <div class="analogy"><b>Sysadmin version</b>It's a cron job with a long setup script and a very short loop body. Anything you can hoist out of the loop, you do.</div>
+      </div>
+    </div>
+
+    <div class="chap">
+      <div>
+        <span class="k">04 · Understand, part 1</span>
+        <h3>Finding the sky is MS Paint's bucket tool</h3>
+        <p>Clouds should drift across the sky, not across a mountain. But the program has no idea what a sky is. So it cheats:</p>
+        <ul>
+          <li>Start at the top row (the sky is usually up there).</li>
+          <li>Spread to any neighbour that is <em>smooth</em> and <em>a similar colour</em>.</li>
+          <li>Stop at busy texture: trees, rock, buildings.</li>
+          <li>Anything fully surrounded by sky (a cloud, the sun) counts as sky too.</li>
+        </ul>
+        <p>That's a <em>flood fill</em>, the same thing the paint bucket does. Press play and watch it spread.</p>
+        <div class="ctrl"><button type="button" class="btn" id="fillGo">Play the fill</button><span class="chip" id="fillOut">0 cells of sky</span></div>
+      </div>
+      <canvas class="pic" id="fillCanvas" width="960" height="540" aria-label="A small grid of the photo, with sky cells turning bright as the fill spreads"></canvas>
+    </div>
+
+    <div class="chap">
+      <div>
+        <span class="k">05 · Understand, part 2</span>
+        <h3>Finding a lake is <code>diff</code> with a mirror</h3>
+        <p>A still lake reflects what's above it. So for every row that might be the shoreline, nynex compares the rows above it with the rows below it <em>flipped upside down</em>.</p>
+        <pre><span class="c"># roughly, in shell</span>
+diff &lt;(head -n $y photo) &lt;(tail -n +$y photo | tac)</pre>
+        <p>If the flipped version matches much better than the unflipped one, that's a reflection, and everything below that row gets ripples and glints.</p>
+        <p class="small">The unflipped check matters: fog matches itself everywhere, but it doesn't match <em>better</em> flipped.</p>
+      </div>
+      <img class="pic" src="screenshots/photo-original.jpg" alt="The river photo: cliffs above, their reflection below the waterline." loading="lazy" width="1280" height="720">
+    </div>
+
+    <div class="chap">
+      <div>
+        <span class="k">06 · Understand, part 3</span>
+        <h3>Sixteen colours, elected by the pixels</h3>
+        <p>The stylized look uses a small palette, chosen per photo with <em>k-means</em>:</p>
+        <ul>
+          <li>Nominate 16 colours, spread from dark to light.</li>
+          <li>Every pixel votes for the nearest one.</li>
+          <li>Each colour moves to the average of its voters.</li>
+          <li>Repeat 12 times. Done.</li>
+        </ul>
+        <p>Then the trick that makes it fast: a <em>lookup table</em>. For all 32,768 possible "rounded" colours, work out the nearest palette entry once and store the answer. 32 KB.</p>
+        <div class="analogy"><b>Sysadmin version</b>It's <code>/etc/hosts</code> instead of a DNS query. Every frame asks "which palette colour is this?" 41,000 times, and each answer is one memory read.</div>
+      </div>
+      <img class="pic" src="screenshots/look-chunky.png" alt="Half Dome in big pixels drawn with a small cream, clay and slate palette." loading="lazy" width="1920" height="1080">
+    </div>
+
+    <div class="chap">
+      <div>
+        <span class="k">07 · Stylize</span>
+        <h3>Dither: how 1993 faked more colours</h3>
+        <p>With only a few colours, smooth skies turn into ugly stripes. The fix from the GIF era: before rounding, nudge each pixel up or down by a tiny amount from a fixed 4×4 pattern (a <em>Bayer matrix</em>). The stripes dissolve into a fine cross-hatch your eye blends back together.</p>
+        <div class="ctrl">
+          <label for="ditherLevels">Colours</label>
+          <input id="ditherLevels" type="range" min="2" max="8" value="4">
+          <span class="chip" id="ditherOut">4</span>
+          <label><input type="checkbox" id="ditherOn" checked> Dither</label>
+        </div>
+        <p class="small">Same palette, same number of colours. Untick "Dither" to see the stripes come back.</p>
+      </div>
+      <canvas class="pic" id="ditherCanvas" width="320" height="180" aria-label="A sunset gradient drawn with a few colours, with or without dithering"></canvas>
+    </div>
+
+    <div class="chap">
+      <div>
+        <span class="k">08 · Animate</span>
+        <h3>Every moving thing is a cheap trick</h3>
+        <ul>
+          <li><b>Water:</b> each row below the shoreline slides sideways on two slow sine waves. Deeper rows slide further. That's the whole ripple.</li>
+          <li><b>Clouds:</b> smooth random "noise" (think blurry TV static), thresholded so only the bright blobs become cloud, sliding a little every frame. It wraps around, so it never runs out.</li>
+          <li><b>The sun:</b> a soft circle that gets 5% brighter and dimmer over six seconds. Breathing.</li>
+          <li><b>Birds:</b> five pixels in a V, flipping between two poses twice a second.</li>
+          <li><b>Stars:</b> only on a dark sky, only on sky cells, each twinkling at its own speed.</li>
+        </ul>
+      </div>
+      <div>
+        <span class="k">09 · A detour</span>
+        <h3>Random, but the same every time</h3>
+        <p>Sparkles pop up "at random", but nynex never rolls dice. It takes <em>where</em> and <em>when</em> (x, y, time) and runs them through a hash, the way <code>sha256sum</code> turns a file into gibberish that is always the same gibberish.</p>
+        <p>Why? Four CPU cores draw four parts of the screen at once. If they shared one dice, they'd queue up for it. With a hash, nobody needs to talk to anybody.</p>
+        <div class="ctrl">
+          <label for="hx">x <input id="hx" type="number" value="120"></label>
+          <label for="hy">y <input id="hy" type="number" value="40"></label>
+          <label for="ht">time <input id="ht" type="number" value="7"></label>
+        </div>
+        <div class="ctrl"><button type="button" class="btn" id="hroll">Roll it again</button><span class="chip" id="hout">…</span></div>
+        <p class="small" id="hnote">Press the button as often as you like. Change a number to get a different answer.</p>
+        <div class="analogy"><b>Sysadmin version</b>Consistent hashing in a load balancer: the same client always lands on the same server, with no shared table to lock.</div>
+      </div>
+    </div>
+
+    <div class="chap">
+      <div>
+        <span class="k">10 · Show, part 1</span>
+        <h3>Four cores, one frame, <code>xargs -P4</code></h3>
+        <p>A frame is cut into horizontal strips, and a pool of worker threads takes strips off the pile until the frame is done. It's GNU <code>parallel</code> for pixels.</p>
+        <p><b>Why only four workers?</b> More workers finish each frame a hair sooner but burn more CPU in total, because idle workers spin for a moment hoping for more work before they sleep. A screensaver should be cheap, not fast.</p>
+        <p><b>And loading photos?</b> Decoding a big JPEG takes a tenth of a second or more. That happens on its own short-lived thread while the current picture keeps playing, and the result comes back through a channel, like a named pipe: one side writes the finished scene, the other picks it up when it's ready.</p>
+      </div>
+      <div>
+        <span class="k">11 · Show, part 2</span>
+        <h3>Only send what changed. <code>rsync</code> for frames.</h3>
+        <p>If a scene has no water, clouds or birds, the picture is identical every frame except for the sun's glow. So nynex keeps the finished picture, redraws only the glow's rectangle, and tells the window system "just these rectangles changed". Windows' compositor, or Hyprland and Sway on Linux, then copies only those bits to the screen.</p>
+        <div class="analogy"><b>Sysadmin version</b><code>rsync</code> sends the changed blocks, not the whole file. A test checks that the shortcut draws exactly the same pixels as the long way round.</div>
+      </div>
+    </div>
+
+    <div class="chap wide">
+      <div>
+        <span class="k">12 · Being a good citizen</span>
+        <h3>Sleep between frames. Don't catch up. Stop when hidden.</h3>
+        <ul>
+          <li><b>Sleep:</b> after drawing a frame, the program tells the OS "wake me in 33 ms" and uses no CPU until then. No busy loops.</li>
+          <li><b>Don't catch up:</b> if a frame is late because the machine was busy, nynex doesn't rush to draw the missed ones. It carries on from now. Your compile job wins.</li>
+          <li><b>Hidden means stopped:</b> on Linux the wallpaper only draws when the compositor asks for a frame, which it doesn't while a full-screen window covers it. On Windows it checks for a maximised window on top.</li>
+          <li><b>Give memory back:</b> on Linux, glibc's allocator likes to hoard freed memory "just in case". After each picture change, nynex tells it to return the spare pages. Together with keeping transition frames only while a transition runs, that cut the usual figure in <code>top</code> from about 130 MB to about 75 MB.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="chap">
+      <div>
+        <span class="k">13 · When things go wrong</span>
+        <h3>Fail like a well-run server</h3>
+        <ul>
+          <li><b>A broken photo</b> in the list? Skipped; the slideshow moves on. If <em>every</em> photo is broken you get a message on screen, not a black void.</li>
+          <li><b>A config file with a typo?</b> Kept as <code>config.json.bad</code> before the defaults load, so saving can't wipe your list. Like a <code>.bak</code> before an edit.</li>
+          <li><b>Silly values</b> like a billion birds or a negative display time? Clamped to sane limits on load.</li>
+          <li><b>Config writes</b> go to a temp file, then a rename. A power cut mid-save leaves the old file or the new one, never half of each. Same trick as <code>sed -i</code>.</li>
+          <li><b>A crash</b> writes a line to <code>crash.log</code>, because a screensaver has no console to print to.</li>
+        </ul>
+      </div>
+      <pre><span class="p">$</span> ls ~/.config/nynex-screensaver/
+config.json        <span class="c"># your settings</span>
+config.json.bad    <span class="c"># only if one ever failed to parse</span>
+landscapes/        <span class="c"># copies of your photos</span>
+crash.log          <span class="c"># only if something went wrong</span>
+wallpaper.log      <span class="c"># what the wallpaper attached to</span></pre>
+    </div>
+
+    <div class="chap">
+      <div>
+        <span class="k">14 · Plumbing, Windows</span>
+        <h3>A screensaver is a registry value</h3>
+        <p>A Windows screensaver is just an <code>.exe</code> renamed to <code>.scr</code>. Windows runs whatever is in:</p>
+        <pre>HKCU\Control Panel\Desktop
+  SCRNSAVE.EXE = C:\Users\you\AppData\Roaming\
+                 nynex-screensaver\nynex.scr</pre>
+        <p>nynex copies itself there, sets that value and the timeout, and you never open the old Screen Saver dialog.</p>
+      </div>
+      <div>
+        <span class="k">15 · Plumbing, Omarchy</span>
+        <h3>A screensaver is PATH order</h3>
+        <p>Omarchy's idle service runs a command called <code>omarchy-launch-screensaver</code>. The installer puts a script with the same name in <code>/usr/local/bin</code>, which comes before <code>/usr/bin</code> on your PATH. Same trick as shadowing any command.</p>
+        <pre><span class="p">$</span> which -a omarchy-launch-screensaver
+/usr/local/bin/omarchy-launch-screensaver  <span class="c"># nynex</span>
+/usr/bin/omarchy-launch-screensaver        <span class="c"># original</span></pre>
+      </div>
+    </div>
+
+    <div class="chap">
+      <div>
+        <span class="k">16 · The easter egg</span>
+        <h3>The program carries its own source code</h3>
+        <p>Turn up "code breaking through" and every so often the picture tears open to show code scrolling past, a hex dump, or a crash log typing itself out.</p>
+        <p>It's real. When nynex is compiled, a line in the source tells the compiler: "paste the text of these three source files into the program". So the binary contains its own source, and shows it to you. The crash log is fake, but its file names and line numbers point at real places in that source.</p>
+        <p class="small">Which means the comments written to explain the code now appear in your screensaver.</p>
+      </div>
+      <img class="pic" src="screenshots/look-breakthrough.png" alt="A sunset lake torn open by a band of hex dump and falling columns of code." loading="lazy" width="1920" height="1080">
+    </div>
+
+    <div class="slides-cta">
+      <h3>Want the real thing?</h3>
+      <p>The second page walks through the actual Rust code, file by file and function by function, with the important parts quoted: how the sky fill and the lake test are written, what a frame does step by step, how the slideshow loads in the background, and how frames reach the screen on Windows and Wayland.</p>
+      <div class="cta"><a class="btn primary" href="code.html">How the code works</a></div>
+    </div>
+  </section>
+
   <section id="light" aria-labelledby="light-h">
     <div class="head">
       <p class="eyebrow">How light it is</p>
@@ -266,25 +530,6 @@ footer { padding-block: 2.5rem 3rem; border-top: 2px dashed var(--rule); font-si
       </table>
     </div>
     <p class="note">Memory is the resident size Linux reports (RSS). Windows Task Manager shows a different number by default (the private working set, which leaves out shared libraries and memory Windows has trimmed), so it reads much lower for the same program. Full method and raw numbers: <a href="https://github.com/kingof9x/nynex-screensaver/blob/main/docs/BENCHMARKS.md">BENCHMARKS.md</a>.</p>
-  </section>
-
-  <section aria-labelledby="how-h">
-    <div class="head">
-      <p class="eyebrow">How it works</p>
-      <h2 id="how-h">Five steps, thirty times a second</h2>
-    </div>
-    <div class="how">
-      <div><span class="k">once per photo</span><h3>Shrink</h3><p>Crop to your screen's shape and shrink to a grid of big pixels: about 41,000 cells instead of 2 million pixels.</p></div>
-      <div><span class="k">once per photo</span><h3>Understand</h3><p>Find the sky with a paint-bucket flood fill, find a lake by checking whether the bottom half mirrors the top, and pick the 16 colours that best represent the picture.</p></div>
-      <div><span class="k">every frame</span><h3>Animate</h3><p>Slide the water rows on slow waves, drift clouds made of noise, flap the birds, twinkle the stars.</p></div>
-      <div><span class="k">every frame</span><h3>Stylize</h3><p>Snap each cell to the palette through a 32 KB lookup table, with a 1990s ordered dither.</p></div>
-      <div><span class="k">every frame</span><h3>Show</h3><p>Scale up with hard edges on four CPU cores, and send the screen only the parts that changed.</p></div>
-    </div>
-    <div class="slides-cta" style="margin-top:2rem">
-      <h3>Want the long version, without needing to be a programmer?</h3>
-      <p>A slide tour for power users and sysadmins: what a flood fill has to do with MS Paint, why the lake test is basically <code>diff</code>, and how a program can show its own source code.</p>
-      <div class="cta"><a class="btn primary" href="presentation.html">Open the slides</a><a class="btn" href="https://github.com/kingof9x/nynex-screensaver/blob/main/docs/ARCHITECTURE.md">Read the architecture</a></div>
-    </div>
   </section>
 
   <section id="install" aria-labelledby="install-h">
@@ -313,13 +558,26 @@ nynex --screensaver               # one full-screen window
 nynex --render in.jpg out.png     # one frame to a file</pre>
       </div>
     </div>
+    <div class="plat" style="margin-top:2.4rem">
+      <h3>Poke at it</h3>
+      <pre><span class="c"># draw one frame of your own photo, 5 seconds in</span>
+<span class="p">$</span> nynex --render ~/Pictures/lake.jpg frame.png --seconds 5
+
+<span class="c"># watch what it costs while it runs as a wallpaper</span>
+<span class="p">$</span> nynex --wallpaper &amp;
+<span class="p">$</span> top -p $(pgrep -n nynex)
+
+<span class="c"># build it and run the tests yourself (needs Rust: rustup.rs)</span>
+<span class="p">$</span> git clone https://github.com/kingof9x/nynex-screensaver
+<span class="p">$</span> cd nynex-screensaver &amp;&amp; cargo test</pre>
+    </div>
   </section>
 </div>
 
 <div class="wrap">
   <footer>
     <span>nynex screensaver · by kingof9x</span>
-    <span><a href="https://github.com/kingof9x/nynex-screensaver">Source on GitHub</a> · <a href="presentation.html">Slides</a> · <a href="https://github.com/kingof9x/nynex-screensaver/blob/main/docs/REVIEW.md">Review guide</a></span>
+    <span><a href="https://github.com/kingof9x/nynex-screensaver">Source on GitHub</a> · <a href="code.html">How the code works</a> · <a href="https://github.com/kingof9x/nynex-screensaver/blob/main/docs/REVIEW.md">Review guide</a></span>
   </footer>
 </div>
 
@@ -330,6 +588,139 @@ nynex --render in.jpg out.png     # one frame to a file</pre>
   function set() { box.style.setProperty('--cut', cut.value + '%'); }
   cut.addEventListener('input', set);
   set();
+})();
+
+(function () {
+  // ---- shared photo for the demos
+  var photo = new Image();
+  var photoReady = new Promise(function (res) { photo.onload = res; photo.onerror = res; });
+  photo.src = 'screenshots/photo-original.jpg';
+
+  // ---- 02: pixelation slider
+  var pc = document.getElementById('pixCanvas'), px = pc.getContext('2d');
+  var tmp = document.createElement('canvas');
+  function drawPix() {
+    var gw = +document.getElementById('pixSlider').value, gh = Math.round(gw * 9 / 16);
+    document.getElementById('pixOut').textContent = gw + ' × ' + gh + ' = ' + (gw * gh).toLocaleString('en-US') + ' cells';
+    if (!photo.naturalWidth) return;
+    tmp.width = gw; tmp.height = gh;
+    var t = tmp.getContext('2d'); t.imageSmoothingEnabled = true; t.drawImage(photo, 0, 0, gw, gh);
+    px.imageSmoothingEnabled = false; px.drawImage(tmp, 0, 0, pc.width, pc.height);
+  }
+  document.getElementById('pixSlider').addEventListener('input', drawPix);
+  photoReady.then(drawPix);
+
+  // ---- 04: flood fill (a small version of find_sky in scene.rs)
+  var fc = document.getElementById('fillCanvas'), fx = fc.getContext('2d');
+  var FW = 96, FH = 54, cells = null, timer = null;
+  function lum(r, g, b) { return 0.299 * r + 0.587 * g + 0.114 * b; }
+  function prepFill() {
+    if (!photo.naturalWidth) return;
+    var c = document.createElement('canvas'); c.width = FW; c.height = FH;
+    var g = c.getContext('2d'); g.drawImage(photo, 0, 0, FW, FH);
+    var d = g.getImageData(0, 0, FW, FH).data;
+    cells = { rgb: d, sky: new Uint8Array(FW * FH), tex: new Float32Array(FW * FH) };
+    // texture: brightness spread in a 3x3 neighbourhood
+    for (var y = 0; y < FH; y++) for (var x = 0; x < FW; x++) {
+      var s = 0, s2 = 0, n = 0;
+      for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+        var xx = Math.min(FW - 1, Math.max(0, x + dx)), yy = Math.min(FH - 1, Math.max(0, y + dy)), k = (yy * FW + xx) * 4;
+        var l = lum(d[k], d[k + 1], d[k + 2]); s += l; s2 += l * l; n++;
+      }
+      cells.tex[y * FW + x] = Math.sqrt(Math.max(0, s2 / n - (s / n) * (s / n)));
+    }
+    drawFill();
+  }
+  function drawFill() {
+    if (!cells) return;
+    var cw = fc.width / FW, ch = fc.height / FH, d = cells.rgb;
+    for (var y = 0; y < FH; y++) for (var x = 0; x < FW; x++) {
+      var k = (y * FW + x) * 4, i2 = y * FW + x;
+      if (cells.sky[i2]) fx.fillStyle = cells.sky[i2] === 2 ? '#f6ecdc' : '#d97757';
+      else fx.fillStyle = 'rgb(' + (d[k] * 0.55 | 0) + ',' + (d[k + 1] * 0.55 | 0) + ',' + (d[k + 2] * 0.55 | 0) + ')';
+      fx.fillRect(Math.floor(x * cw), Math.floor(y * ch), Math.ceil(cw), Math.ceil(ch));
+    }
+  }
+  function runFill() {
+    if (!cells) return;
+    if (timer) clearInterval(timer);
+    cells.sky.fill(0);
+    var q = [], d = cells.rgb, count = 0, lim = 9;
+    for (var x = 0; x < FW; x++) if (cells.tex[x] < lim) { cells.sky[x] = 1; q.push(x); count++; }
+    var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    function step(budget) {
+      while (q.length && budget-- > 0) {
+        var i3 = q.shift(), x0 = i3 % FW, y0 = (i3 / FW) | 0, k0 = i3 * 4;
+        cells.sky[i3] = 2;
+        [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (o) {
+          var x1 = x0 + o[0], y1 = y0 + o[1];
+          if (x1 < 0 || y1 < 0 || x1 >= FW || y1 >= FH) return;
+          var j = y1 * FW + x1, k1 = j * 4;
+          if (cells.sky[j] || cells.tex[j] >= lim) return;
+          var diff = Math.abs(d[k1] - d[k0]) + Math.abs(d[k1 + 1] - d[k0 + 1]) + Math.abs(d[k1 + 2] - d[k0 + 2]);
+          if (diff < 22) { cells.sky[j] = 1; q.push(j); count++; }
+        });
+      }
+      document.getElementById('fillOut').textContent = count.toLocaleString('en-US') + ' cells of sky';
+      drawFill();
+      return q.length > 0;
+    }
+    if (reduce) { while (step(1e9)) {} return; }
+    timer = setInterval(function () { if (!step(60)) { clearInterval(timer); timer = null; } }, 30);
+  }
+  document.getElementById('fillGo').onclick = runFill;
+  photoReady.then(prepFill);
+
+  // ---- 07: dither
+  var dc = document.getElementById('ditherCanvas'), dx2 = dc.getContext('2d');
+  var RAMP = [[0x26, 0x1a, 0x2e], [0x7a, 0x4a, 0x3c], [0xa8, 0x60, 0x4b], [0xcf, 0x80, 0x61], [0xe3, 0xa9, 0x8c], [0xee, 0xcb, 0xb5], [0xf4, 0xe2, 0xd4], [0xfb, 0xf8, 0xf2]];
+  var B4 = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+  function drawDither() {
+    var n = +document.getElementById('ditherLevels').value, on = document.getElementById('ditherOn').checked;
+    document.getElementById('ditherOut').textContent = n;
+    var pal = []; for (var p = 0; p < n; p++) pal.push(RAMP[Math.round(p * 7 / (n - 1))]);
+    var W = dc.width, H = dc.height, img = dx2.createImageData(W, H), out = img.data;
+    var cx = W * 0.72, cy = H * 0.62;
+    for (var y = 0; y < H; y++) for (var x = 0; x < W; x++) {
+      // a sunset: brighter near a low sun, darker toward the top
+      var r = Math.hypot(x - cx, (y - cy) * 1.6) / W;
+      var v = Math.min(1, Math.max(0, 0.95 - r * 1.25 - (1 - y / H) * 0.25));
+      if (on) v += ((B4[y & 3][x & 3] + 0.5) / 16 - 0.5) / (n - 1);
+      var idx = Math.min(n - 1, Math.max(0, Math.round(v * (n - 1))));
+      var c = pal[idx], k = (y * W + x) * 4;
+      out[k] = c[0]; out[k + 1] = c[1]; out[k + 2] = c[2]; out[k + 3] = 255;
+    }
+    dx2.putImageData(img, 0, 0);
+  }
+  document.getElementById('ditherLevels').addEventListener('input', drawDither);
+  document.getElementById('ditherOn').addEventListener('change', drawDither);
+  drawDither();
+
+  // ---- 09: the same hash nynex uses (scene.rs, hash2)
+  function hash2(x, y, seed) {
+    var M = 0xFFFFFFFFn, W = 0xFFFFFFFFFFFFFFFFn;
+    var n = ((BigInt(x) * 374761393n) & W);
+    n = (n + ((BigInt(y) * 668265263n) & W)) & W;
+    n = (n + BigInt(seed) * 2246822519n) & W;
+    n = n & M;
+    n = ((n ^ (n >> 13n)) * 1274126177n) & M;
+    return Number((n ^ (n >> 16n)) & 0xFFFFn) / 65535;
+  }
+  var rolls = 0;
+  function roll() {
+    var x = parseInt(document.getElementById('hx').value, 10) || 0;
+    var y = parseInt(document.getElementById('hy').value, 10) || 0;
+    var t = parseInt(document.getElementById('ht').value, 10) || 0;
+    var v = hash2(x, y + t * 7919, 42);
+    document.getElementById('hout').textContent = v.toFixed(6) + (v > 0.985 ? '  sparkle!' : '');
+    rolls++;
+    document.getElementById('hnote').textContent = rolls > 1
+      ? 'Rolled ' + rolls + ' times. Same input, same answer. Change a number to get a different one.'
+      : 'Press the button as often as you like. Change a number to get a different answer.';
+  }
+  ['hx', 'hy', 'ht'].forEach(function (id) { document.getElementById(id).addEventListener('input', function () { rolls = 0; roll(); }); });
+  document.getElementById('hroll').onclick = roll;
+  roll(); rolls = 0;
 })();
 </script>
 </body>

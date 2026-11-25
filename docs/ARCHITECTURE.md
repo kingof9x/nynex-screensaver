@@ -1,7 +1,8 @@
 # How nynex works
 
 This is the map of the code for someone who wants to read or review it. The README covers how to
-use the app; this page covers how it is built. Every source file also starts with a comment that
+use the app; this page covers how it is built. The website has a longer, more readable version
+with the important code quoted: [How the code works](https://kingof9x.github.io/nynex-screensaver/code.html). Every source file also starts with a comment that
 explains its part, and the tricky functions have comments of their own.
 
 ## The short version

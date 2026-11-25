@@ -1,0 +1,923 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>How nynex's code works</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="A detailed walk through the nynex source code: the renderer, the slideshow, the windows and the platform glue, with the important parts quoted.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<!-- Generated from docs/code-page/template.html by docs/code-page/build.py, which pastes in the
+     quoted code straight from src/. Edit the template, then run:
+     python3 docs/code-page/build.py . docs/code-page/template.html docs/code.html -->
+<style>
+/* Same palette and type as index.html. A reading column with a table of contents on the left
+   on wide screens; code excerpts are allowed to be a little wider than the text. */
+:root {
+  --paper: #fbf8f2; --paper-2: #f3ebe0; --ink: #2a1d2c; --ink-soft: #5d4f58;
+  --clay: #a8543c; --clay-bright: #d97757; --slate: #4f5d6e; --sage: #56603f; --rule: #e3d6c6;
+  --code-bg: #141413; --code-fg: #f6ecdc; --code-c: #9c9083;
+  --font-display: "Pixelify Sans", "Courier New", monospace;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #110d13; --paper-2: #1b151d; --ink: #f6ecdc; --ink-soft: #c2b3a6;
+    --clay: #e3a98c; --clay-bright: #d97757; --slate: #9eadba; --sage: #a0aa85; --rule: #2e2530;
+    --code-bg: #08060a; --code-fg: #f6ecdc; --code-c: #8f8478; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #110d13; --paper-2: #1b151d; --ink: #f6ecdc; --ink-soft: #c2b3a6;
+  --clay: #e3a98c; --clay-bright: #d97757; --slate: #9eadba; --sage: #a0aa85; --rule: #2e2530;
+  --code-bg: #08060a; --code-fg: #f6ecdc; --code-c: #8f8478; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 1rem; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 400 1.0625rem/1.65 var(--font-body); }
+a { color: var(--clay); text-underline-offset: 0.18em; }
+a:focus-visible { outline: 3px solid var(--clay-bright); outline-offset: 2px; }
+.wrap { max-width: 76rem; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1, h2 { font-family: var(--font-display); font-weight: 700; line-height: 1.1; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(2.2rem, 5.5vw, 3.6rem); }
+h2 { font-size: clamp(1.6rem, 3.2vw, 2.15rem); margin-top: 0.4rem; }
+h3 { font: 600 1.15rem/1.3 var(--font-body); margin: 1.8rem 0 0; }
+p, ul, ol { margin: 0.9rem 0 0; max-width: 68ch; }
+ul, ol { padding-left: 1.2rem; }
+li + li { margin-top: 0.3rem; }
+code { font-family: var(--font-mono); font-size: 0.88em; background: var(--paper-2); padding: 0.05em 0.3em; border-radius: 3px; }
+.eyebrow { font: 500 0.78rem/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); }
+
+.bar { display: flex; flex-wrap: wrap; gap: 0.5rem 1.4rem; align-items: center; justify-content: space-between; padding-block: 1.1rem; }
+.logo { font: 700 1.5rem/1 var(--font-display); color: var(--ink); text-decoration: none; }
+.logo span { color: var(--clay-bright); }
+.bar nav { display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem; font-size: 0.95rem; }
+.bar nav a { color: var(--ink-soft); text-decoration: none; }
+.bar nav a:hover { color: var(--clay); text-decoration: underline; }
+
+.intro { padding-block: 1.5rem 2.5rem; border-bottom: 2px dashed var(--rule); display: grid; gap: 0.2rem; }
+.intro .lede { font-size: 1.15rem; color: var(--ink-soft); }
+
+.layout { display: grid; gap: 2rem; padding-block: 2rem 4rem; }
+.toc { font-size: 0.93rem; }
+.toc ol { margin: 0.6rem 0 0; padding-left: 1.4rem; }
+.toc li + li { margin-top: 0.25rem; }
+.toc a { color: var(--ink-soft); text-decoration: none; }
+.toc a:hover { color: var(--clay); text-decoration: underline; }
+main { min-width: 0; }
+main section { padding-block: 0 2.6rem; }
+main section + section { padding-top: 2.6rem; border-top: 2px dashed var(--rule); }
+
+figure.src { margin: 1.2rem 0 0; min-width: 0; }
+figure.src figcaption { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.2rem 1rem; font: 500 0.8rem/1.3 var(--font-mono); background: var(--paper-2); border: 1px solid var(--rule); border-bottom: 0; border-radius: 4px 4px 0 0; padding: 0.45rem 0.75rem; }
+figure.src figcaption a { text-decoration: none; }
+figure.src figcaption span { color: var(--ink-soft); }
+pre { margin: 0; background: var(--code-bg); color: var(--code-fg); border-radius: 0 0 4px 4px; padding: 0.9rem 1rem; overflow-x: auto; font: 400 0.84rem/1.55 var(--font-mono); tab-size: 4; }
+pre.plain { border-radius: 4px; margin-top: 1.2rem; }
+pre code { background: none; padding: 0; font-size: inherit; }
+pre .c { color: var(--code-c); font-style: italic; }
+
+.table-wrap { overflow-x: auto; margin-top: 1.2rem; }
+table { border-collapse: collapse; width: 100%; min-width: 32rem; font-size: 0.94rem; }
+th, td { text-align: left; padding: 0.5rem 0.65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font: 500 0.75rem/1.2 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-soft); }
+td code { white-space: nowrap; }
+.note { border-left: 4px solid var(--sage); padding: 0.2rem 0 0.2rem 0.9rem; max-width: 68ch; margin-top: 1.2rem; }
+.note b { color: var(--sage); }
+footer { padding-block: 2.5rem 3rem; border-top: 2px dashed var(--rule); font-size: 0.9rem; color: var(--ink-soft); display: flex; flex-wrap: wrap; gap: 0.6rem 1.4rem; justify-content: space-between; }
+
+@media (min-width: 64rem) {
+  .layout { grid-template-columns: 15rem minmax(0, 1fr); gap: 3rem; }
+  .toc { position: sticky; top: 1rem; align-self: start; max-height: calc(100vh - 2rem); overflow-y: auto; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="bar">
+    <a class="logo" href="index.html">nynex<span>_</span></a>
+    <nav aria-label="Site">
+      <a href="index.html">Back to the nynex page</a>
+      <a href="https://github.com/kingof9x/nynex-screensaver/tree/main/src">Source on GitHub</a>
+    </nav>
+  </header>
+
+  <div class="intro">
+    <p class="eyebrow">How the code works</p>
+    <h1>Inside nynex, one file at a time</h1>
+    <p class="lede">The main page explains the ideas. This page shows how they are written: the Rust code that turns a photo into an animated scene, runs the slideshow, and gets frames onto a Windows or Wayland screen. Every code excerpt below is copied straight from the source, with a link to the exact lines.</p>
+    <p>You don't need to know Rust to follow along. Where the code uses a Rust idea that matters, the text explains it. If you only want the big picture, the <a href="index.html#inside">tour on the main page</a> is shorter.</p>
+  </div>
+
+  <div class="layout">
+    <nav class="toc" aria-label="On this page">
+      <p class="eyebrow">On this page</p>
+      <ol>
+        <li><a href="#map">The map</a></li>
+        <li><a href="#start">Starting up</a></li>
+        <li><a href="#load">Loading a photo</a></li>
+        <li><a href="#grid">The grid</a></li>
+        <li><a href="#sky">Finding the sky</a></li>
+        <li><a href="#water">Finding a lake</a></li>
+        <li><a href="#palette">The palette</a></li>
+        <li><a href="#random">Randomness without dice</a></li>
+        <li><a href="#frame">One frame</a></li>
+        <li><a href="#animate">The moving parts</a></li>
+        <li><a href="#stylize">Stylize and scale up</a></li>
+        <li><a href="#damage">Drawing less</a></li>
+        <li><a href="#player">The slideshow</a></li>
+        <li><a href="#windows">Windows and timing</a></li>
+        <li><a href="#wayland">The Wayland wallpaper</a></li>
+        <li><a href="#os">Becoming the screensaver</a></li>
+        <li><a href="#config">Settings on disk</a></li>
+        <li><a href="#memory">Memory</a></li>
+        <li><a href="#safety">Unsafe code</a></li>
+        <li><a href="#tests">Tests</a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <section id="map" aria-labelledby="map-h">
+        <p class="eyebrow">1</p>
+        <h2 id="map-h">The map</h2>
+        <p>nynex is a single Rust program of about 5,400 lines in eleven files under <code>src/</code>. It has no GPU code, no shaders and no game engine: every frame is computed by the CPU into a plain array of 32-bit numbers, one per screen pixel, and handed to the operating system to show.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>File</th><th>Lines</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>scene.rs</code></td><td>2,068</td><td>The renderer. Analyses a photo once (sky, lake, palette, sun), then draws its frames.</td></tr>
+            <tr><td><code>player.rs</code></td><td>406</td><td>The slideshow: timing, loading the next photo in the background, the seven transitions.</td></tr>
+            <tr><td><code>saver.rs</code></td><td>500</td><td>Windows of any kind (screensaver, preview box, plain window, Windows wallpaper) and frame timing.</td></tr>
+            <tr><td><code>layer.rs</code></td><td>406</td><td>The Linux wallpaper: one Wayland layer-shell surface per monitor.</td></tr>
+            <tr><td><code>wallpaper.rs</code></td><td>217</td><td>Windows: putting windows behind the desktop icons; start with Windows.</td></tr>
+            <tr><td><code>install.rs</code></td><td>110</td><td>Windows: registering <code>nynex.scr</code> as the screensaver.</td></tr>
+            <tr><td><code>omarchy.rs</code></td><td>129</td><td>Linux: the Omarchy screensaver hook, idle time, start at login.</td></tr>
+            <tr><td><code>config.rs</code></td><td>401</td><td>Settings: the data types, loading, clamping and safely saving <code>config.json</code>, importing photos.</td></tr>
+            <tr><td><code>settings.rs</code></td><td>655</td><td>The settings app, built with the egui toolkit.</td></tr>
+            <tr><td><code>main.rs</code></td><td>176</td><td>Startup, the command line, and the <code>--render</code> tool.</td></tr>
+            <tr><td><code>stress.rs</code></td><td>287</td><td>Stress tests; only compiled for <code>cargo test</code>.</td></tr>
+          </tbody>
+        </table></div>
+        <p>Two types do almost all of the work, and the rest of the program is plumbing around them:</p>
+        <ul>
+          <li><b><code>Scene</code></b> (in <code>scene.rs</code>) is one photo prepared for one screen size. It is built once, which is slow (tens of milliseconds), and then asked for a frame 30 times a second, which is fast (a few milliseconds).</li>
+          <li><b><code>Player</code></b> (in <code>player.rs</code>) owns the scene on screen and the one coming next, decides when to switch, and blends between them. Every screen has its own <code>Player</code>.</li>
+        </ul>
+        <p>The window code only ever does one thing with a player: "here is a pixel buffer and the time since last frame, fill it in and tell me what changed". That single call, <code>Player::update_damage</code>, is the same for the Windows screensaver, the Linux wallpaper and the settings preview.</p>
+      </section>
+
+      <section id="start" aria-labelledby="start-h">
+        <p class="eyebrow">2</p>
+        <h2 id="start-h">Starting up</h2>
+        <p>Windows starts a screensaver with odd arguments: <code>/s</code> to show it, <code>/p 1234</code> to draw inside the little preview box of window handle 1234, <code>/c</code> for settings, and sometimes with a colon (<code>/p:1234</code>) or a dash instead of a slash. <code>main</code> strips the slash or dash, splits off anything after a colon, and then picks the job:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/main.rs#L78-L109">main.rs · main(): picking the job</a><span>lines 78–109</span></figcaption><pre><code>match flag.as_str() {
+    &quot;s&quot; =&gt; saver::run(saver::Mode::Full),
+    &quot;p&quot; | &quot;l&quot; =&gt; {
+        let hwnd = inline.or_else(|| args.get(1).cloned()).and_then(|v| v.trim().parse::&lt;isize&gt;().ok());
+        match hwnd {
+            Some(h) =&gt; saver::run(saver::Mode::Preview(h)),
+            None =&gt; saver::run(saver::Mode::Windowed),
+        }
+    }
+    &quot;window&quot; =&gt; saver::run(saver::Mode::Windowed),
+    &quot;wallpaper&quot; =&gt; run_wallpaper(),
+    &quot;screensaver&quot; =&gt; {
+        let mut index = 0usize;
+        let mut app_id = &quot;nynex&quot;.to_string();
+        let mut i = 1;
+        while i &lt; args.len() {
+            match args[i].as_str() {
+                &quot;--index&quot; =&gt; index = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(0),
+                &quot;--app-id&quot; =&gt; app_id = args.get(i + 1).cloned().unwrap_or(app_id),
+                _ =&gt; {}
+            }
+            i += 2;
+        }
+        saver::run(saver::Mode::Single { index, app_id })
+    }
+    &quot;render&quot; =&gt; render_cli(&amp;args[1..]),
+    _ =&gt; {
+        if let Err(e) = settings::run() {
+            eprintln!(&quot;settings window failed: {e}&quot;);
+        }
+    }
+}</code></pre></figure>
+        <p>Before that, two settings are made that affect the whole run. First, glibc (the C library on most Linux systems) normally gives every thread its own memory pool, called an arena, and is slow to hand freed memory back to the system. A program that decodes a 30 MB photo on a fresh thread every minute ends up with several half-empty arenas. Limiting it to two keeps that in check. Second, the thread pool that draws frames in parallel (the <code>rayon</code> library) is capped at four threads:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/main.rs#L60-L70">main.rs · main(): allocator and thread pool</a><span>lines 60–70</span></figcaption><pre><code><span class="c">// glibc gives every thread its own heap (&quot;arena&quot;) and rarely hands freed memory back,</span>
+<span class="c">// so a renderer that swaps 30 MB images every minute slowly bloats. Two arenas is plenty</span>
+<span class="c">// for us; this has to happen before any thread starts.</span>
+#[cfg(all(target_os = &quot;linux&quot;, target_env = &quot;gnu&quot;))]
+<span class="c">// SAFETY: mallopt only changes allocator settings and is called before other threads exist.</span>
+unsafe {
+    libc::mallopt(libc::M_ARENA_MAX, 2);
+}
+<span class="c">// A few worker threads are plenty for a frame; more just spin and burn CPU between frames.</span>
+let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 4);
+let _ = rayon::ThreadPoolBuilder::new().num_threads(threads).build_global();</code></pre></figure>
+        <p>The cap is there because rayon's idle workers spin for a moment before they sleep, hoping for more work. A screensaver finishes its frame in a few milliseconds and then has 30 ms with nothing to do, so extra workers mostly add spinning. Measured, more threads made each frame slightly faster but cost more CPU in total.</p>
+        <p>The panic hook set just above this writes any crash to <code>crash.log</code> in the settings folder, because a screensaver has no console to print an error to.</p>
+      </section>
+
+      <section id="load" aria-labelledby="load-h">
+        <p class="eyebrow">3</p>
+        <h2 id="load-h">Loading a photo</h2>
+        <p><code>load_source</code> turns a file into pixels. GIFs keep their frames (within a 192 MB budget, so a long GIF can't exhaust memory). Stills are decoded, and anything bigger than 2,560 px is shrunk right away, since the grid is never wider than that.</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L302-L320">scene.rs · load_source</a><span>lines 302–320</span></figcaption><pre><code>pub fn load_source(path: &amp;Path) -&gt; Result&lt;Arc&lt;Source&gt;, String&gt; {
+    let is_gif = path.extension().map(|e| e.eq_ignore_ascii_case(&quot;gif&quot;)).unwrap_or(false);
+    let frames = if is_gif { load_gif_frames(path) } else { Vec::new() };
+    if let Some((first, _)) = frames.first() {
+        return Ok(Arc::new(Source { img: first.clone(), frames }));
+    }
+    let img = match crate::config::decode_unlimited(path) {
+        Some(i) =&gt; i,
+        None =&gt; image::open(path).map_err(|e| format!(&quot;{}: {e}&quot;, path.display()))?,
+    };
+    let img = if img.width() &gt; 2560 || img.height() &gt; 2560 {
+        img.resize(2560, 2560, FilterType::Triangle)
+    } else {
+        img
+    };
+    <span class="c">// into_rgb8 hands over the pixels without a copy when they are already 8-bit RGB (the</span>
+    <span class="c">// usual case for JPEGs); to_rgb8 would briefly hold a second 20 to 45 MB copy</span>
+    Ok(Arc::new(Source { img: img.into_rgb8(), frames: Vec::new() }))
+}</code></pre></figure>
+        <p>Three details worth noticing:</p>
+        <ul>
+          <li><code>decode_unlimited</code> (in <code>config.rs</code>) lifts the image library's default size limit, which refuses very large photos, but sets a 2 GB allocation ceiling of its own instead, so a malicious file that claims to be a billion pixels wide is still refused.</li>
+          <li><code>into_rgb8</code> hands the decoded pixels over without copying them when they are already 8-bit RGB, which is the normal case for JPEGs. Its sibling <code>to_rgb8</code> would briefly hold a second full copy.</li>
+          <li>The result is wrapped in an <code>Arc</code>, a reference-counted pointer, so several monitors can share one decoded photo. It is dropped as soon as every scene built from it is ready.</li>
+        </ul>
+      </section>
+
+      <section id="grid" aria-labelledby="grid-h">
+        <p class="eyebrow">4</p>
+        <h2 id="grid-h">The grid</h2>
+        <p>The core idea of the renderer is to work on a small picture and enlarge it at the very end. <code>Scene::new</code> starts by deciding how small. The pixelation slider (0 to 1) becomes a "big pixel" size of 1 to 16 screen pixels at 1080p, scaled with the screen height so a 4K screen shows the same picture, not a finer one:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L742-L744">scene.rs · pixel_size</a><span>lines 742–744</span></figcaption><pre><code>pub fn pixel_size(pixelation: f32) -&gt; f32 {
+    1.0 + 15.0 * pixelation.clamp(0.0, 1.0).powf(1.5)
+}</code></pre></figure>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L756-L773">scene.rs · Scene::new: grid size and analysis</a><span>lines 756–773</span></figcaption><pre><code>let sw = sw.max(8);
+let sh = sh.max(8);
+let aspect = sw as f32 / sh as f32;
+<span class="c">// big-pixel size on screen; scaled with the screen height so a 4K screen and a 1080p</span>
+<span class="c">// screen show the same amount of detail</span>
+let px = pixel_size(look.pixelation) * sh as f32 / 1080.0;
+<span class="c">// (16.min(sw): a window can be resized narrower than 16 px, and clamp panics if min &gt; max)</span>
+let gw = ((sw as f32 / px.max(1.0)).round() as usize).clamp(16.min(sw), sw.min(2560));
+let gh = ((gw as f32 / aspect).round() as usize).max(9);
+let cropped = crop_to_aspect(&amp;src.img, aspect);
+
+<span class="c">// analysis at a fixed small size</span>
+let aw = 320usize;
+let ah = ((aw as f32 / aspect).round() as usize).max(8);
+let small = image::imageops::resize(&amp;*cropped, aw as u32, ah as u32, FilterType::Triangle);
+let small_v = to_vec(&amp;small);
+let sky_a = find_sky(&amp;small_v, aw, ah);
+let water_a = if look.water { find_water_line(&amp;small_v, aw, ah) } else { None };</code></pre></figure>
+        <p>At the default setting a 1080p screen gets a grid about 270 cells wide and 152 tall: 41,000 cells instead of 2 million pixels. Everything that animates is computed on those cells.</p>
+        <p>Notice also the analysis copy, 320 pixels wide. Finding the sky and the lake doesn't need the full grid; doing it on a small fixed size keeps <code>Scene::new</code> fast whatever the screen, and the results are scaled onto the grid afterwards. The <code>16.min(sw)</code> in the clamp is a fix from this review: Rust's <code>clamp</code> panics if its lower bound is above its upper bound, which happened when a window was dragged narrower than 16 pixels.</p>
+      </section>
+
+      <section id="sky" aria-labelledby="sky-h">
+        <p class="eyebrow">5</p>
+        <h2 id="sky-h">Finding the sky</h2>
+        <p>Clouds and stars should only appear in the sky. <code>find_sky</code> works out which cells are sky without any idea what a sky looks like, using two observations: skies are at the top, and skies are smooth.</p>
+        <ol>
+          <li><b>Texture.</b> For each pixel, the standard deviation of brightness in the 5 × 5 square around it. Sky, haze and still water score low; trees, rock and buildings score high. It is computed with box blurs, using the identity <i>variance = mean of squares − square of mean</i>, so it costs a few passes over the image instead of 25 reads per pixel.</li>
+          <li><b>A threshold that adapts.</b> The limit is three times the median texture of the top three rows (plus a small floor). A hazy sky and a crisp one both work, because the limit is measured from the picture itself.</li>
+          <li><b>Flood fill from the top.</b> Every smooth pixel on the top row starts as sky. The fill spreads to each neighbour that is also smooth <i>and</i> within a small colour distance of the pixel it came from, so it follows gradual sky gradients but stops at a horizon.</li>
+          <li><b>Fill the holes.</b> A second fill runs from the bottom edge through everything that isn't sky. Whatever that second fill can't reach is enclosed by sky (a cloud, the sun, a bird), so it counts as sky too.</li>
+        </ol>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L536-L596">scene.rs · find_sky</a><span>lines 536–596</span></figcaption><pre><code>fn find_sky(px: &amp;[Rgb], w: usize, h: usize) -&gt; Vec&lt;bool&gt; {
+    let mut s = vec![[0.0f32; 3]; w * h];
+    for ch in 0..3 {
+        let c: Vec&lt;f32&gt; = px.iter().map(|p| p[ch]).collect();
+        let b = box_blur(&amp;c, w, h, 1);
+        for i in 0..w * h {
+            s[i][ch] = b[i];
+        }
+    }
+    let l: Vec&lt;f32&gt; = s.iter().map(|&amp;c| lum(c)).collect();
+    let l2: Vec&lt;f32&gt; = l.iter().map(|v| v * v).collect();
+    let m = box_blur(&amp;l, w, h, 2);
+    let m2 = box_blur(&amp;l2, w, h, 2);
+    let tex: Vec&lt;f32&gt; = (0..w * h).map(|i| (m2[i] - m[i] * m[i]).max(0.0).sqrt()).collect();
+    let mut top: Vec&lt;f32&gt; = tex[..w * 3.min(h)].to_vec();
+    top.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let tex_lim = (top[top.len() / 2] * 3.0 + 3.0).max(6.0);
+    let mut sky = vec![false; w * h];
+    let mut q = VecDeque::new();
+    for x in 0..w {
+        if tex[x] &lt; tex_lim {
+            sky[x] = true;
+            q.push_back((0usize, x));
+        }
+    }
+    while let Some((y, x)) = q.pop_front() {
+        let c = s[y * w + x];
+        let nb = [(y + 1, x), (y.wrapping_sub(1), x), (y, x + 1), (y, x.wrapping_sub(1))];
+        for (ny, nx) in nb {
+            if ny &lt; h &amp;&amp; nx &lt; w {
+                let i = ny * w + nx;
+                if !sky[i] &amp;&amp; tex[i] &lt; tex_lim {
+                    let d = (s[i][0] - c[0]).abs() + (s[i][1] - c[1]).abs() + (s[i][2] - c[2]).abs();
+                    if d &lt; 10.0 {
+                        sky[i] = true;
+                        q.push_back((ny, nx));
+                    }
+                }
+            }
+        }
+    }
+    <span class="c">// fill holes: anything not reachable from the bottom edge without crossing sky</span>
+    let mut seen = sky.clone();
+    for x in 0..w {
+        let i = (h - 1) * w + x;
+        if !seen[i] {
+            seen[i] = true;
+            q.push_back((h - 1, x));
+        }
+    }
+    while let Some((y, x)) = q.pop_front() {
+        let nb = [(y + 1, x), (y.wrapping_sub(1), x), (y, x + 1), (y, x.wrapping_sub(1))];
+        for (ny, nx) in nb {
+            if ny &lt; h &amp;&amp; nx &lt; w &amp;&amp; !seen[ny * w + nx] {
+                seen[ny * w + nx] = true;
+                q.push_back((ny, nx));
+            }
+        }
+    }
+    (0..w * h).map(|i| sky[i] || !seen[i]).collect()
+}</code></pre></figure>
+        <p>The queue is a <code>VecDeque</code>, so this is a breadth-first fill: it spreads outward in rings, which is exactly what the demo on the main page animates. <code>y.wrapping_sub(1)</code> turns "row −1" into a huge number that fails the <code>ny &lt; h</code> check, which is a compact way to skip neighbours off the top or left edge.</p>
+      </section>
+
+      <section id="water" aria-labelledby="water-h">
+        <p class="eyebrow">6</p>
+        <h2 id="water-h">Finding a lake</h2>
+        <p>A lake reflection means the picture below some row is roughly the picture above it, upside down. <code>find_water_line</code> tests every candidate row between 30% and 90% of the height:</p>
+        <ul>
+          <li>Each row's brightness is turned into deviations from that row's average, so a darker reflection still matches a brighter original.</li>
+          <li>For a candidate row <i>y</i>, it correlates row <i>y</i>−1 with <i>y</i>+1, <i>y</i>−2 with <i>y</i>+2, and so on (the mirror), over a band up to a quarter of the image tall.</li>
+          <li>It also correlates the same rows <i>without</i> flipping. Fog, a plain wall or a uniform field look similar everywhere, so they score well both ways. Only a real reflection scores much better flipped.</li>
+          <li>The score is <i>mirrored − max(plain, 0)</i>. The best row wins if it scores over 0.5; otherwise there is no lake.</li>
+        </ul>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L605-L644">scene.rs · find_water_line</a><span>lines 605–644</span></figcaption><pre><code>fn find_water_line(px: &amp;[Rgb], w: usize, h: usize) -&gt; Option&lt;usize&gt; {
+    let l0: Vec&lt;f32&gt; = px.iter().map(|&amp;c| lum(c)).collect();
+    let l = box_blur(&amp;l0, w, h, 1);
+    let row_dev = |y: usize| -&gt; Vec&lt;f32&gt; {
+        let r = &amp;l[y * w..(y + 1) * w];
+        let m = r.iter().sum::&lt;f32&gt;() / w as f32;
+        r.iter().map(|v| v - m).collect()
+    };
+    let rows: Vec&lt;Vec&lt;f32&gt;&gt; = (0..h).map(row_dev).collect();
+    let corr = |pairs: &amp;mut dyn Iterator&lt;Item = (usize, usize)&gt;| -&gt; f32 {
+        let (mut sab, mut saa, mut sbb) = (0.0f64, 0.0f64, 0.0f64);
+        for (a, b) in pairs {
+            for (&amp;p, &amp;q) in rows[a].iter().zip(rows[b].iter()) {
+                let (p, q) = (p as f64, q as f64);
+                sab += p * q;
+                saa += p * p;
+                sbb += q * q;
+            }
+        }
+        (sab / ((saa * sbb).sqrt() + 1e-6)) as f32
+    };
+    let (mut best, mut axis) = (-1.0f32, None);
+    let hf = h as f32;
+    for y in (hf * 0.3) as usize..(hf * 0.9) as usize {
+        let k = (y as i64 - (hf * 0.1) as i64).min(h as i64 - 1 - y as i64).min((hf * 0.25) as i64);
+        if (k as f32) &lt; hf * 0.1 {
+            continue;
+        }
+        let k = k as usize;
+        <span class="c">// mirrored: row y-1-i against y+1+i;  plain: row y-k+i against y+1+i</span>
+        let mirrored = corr(&amp;mut (0..k).map(|i| (y - 1 - i, y + 1 + i)));
+        let plain = corr(&amp;mut (0..k).map(|i| (y - k + i, y + 1 + i)));
+        let score = mirrored - plain.max(0.0);
+        if score &gt; best {
+            best = score;
+            axis = Some(y);
+        }
+    }
+    if best &gt; 0.5 { axis.map(|a| a + 1) } else { None }
+}</code></pre></figure>
+        <p>The correlation sums are kept in 64-bit floats (<code>f64</code>) because they add up tens of thousands of products, where 32-bit floats would start to lose precision.</p>
+      </section>
+
+      <section id="palette" aria-labelledby="palette-h">
+        <p class="eyebrow">7</p>
+        <h2 id="palette-h">The palette</h2>
+        <h3>Grading</h3>
+        <p>Before choosing colours, every pixel goes through <code>grade</code>: a 25% saturation lift, an S-shaped contrast curve, and a split tone that pushes shadows toward plum, mid-tones toward clay and highlights toward cream. That is where the warm look comes from. The palette entries are then pulled onto three hand-picked colour ramps (clay, slate blue, sage) by <code>fm_color</code>, which chooses a ramp from the hue of the original, ungraded colours, so green grass lands on the sage ramp instead of being warmed to brown.</p>
+        <h3>Choosing the colours: k-means</h3>
+        <p><code>kmeans_palette</code> samples about 8,000 pixels, starts with <i>k</i> colours spread evenly from darkest to lightest, and then 12 times over assigns each sample to its nearest colour and moves each colour to the average of its samples. Starting from a brightness ramp (instead of random picks) makes the result the same every time and avoids two colours starting on top of each other.</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L486-L524">scene.rs · kmeans_palette</a><span>lines 486–524</span></figcaption><pre><code>fn kmeans_palette(px: &amp;[Rgb], k: usize) -&gt; Vec&lt;Rgb&gt; {
+    let step = (px.len() / 8000).max(1);
+    let data: Vec&lt;Rgb&gt; = px.iter().step_by(step).copied().collect();
+    let mut order: Vec&lt;usize&gt; = (0..data.len()).collect();
+    order.sort_by(|&amp;a, &amp;b| lum(data[a]).partial_cmp(&amp;lum(data[b])).unwrap());
+    let k = k.clamp(2, 64).min(data.len().max(2));
+    let mut cent: Vec&lt;Rgb&gt; = (0..k).map(|i| data[order[i * (data.len() - 1) / (k - 1).max(1)]]).collect();
+    let mut lab = vec![0usize; data.len()];
+    for _ in 0..12 {
+        for (i, d) in data.iter().enumerate() {
+            let mut best = (f32::MAX, 0);
+            for (j, c) in cent.iter().enumerate() {
+                let e = (d[0] - c[0]).powi(2) + (d[1] - c[1]).powi(2) + (d[2] - c[2]).powi(2);
+                if e &lt; best.0 {
+                    best = (e, j);
+                }
+            }
+            lab[i] = best.1;
+        }
+        let mut sum = vec![[0.0f32; 3]; k];
+        let mut cnt = vec![0usize; k];
+        for (i, d) in data.iter().enumerate() {
+            let s = &amp;mut sum[lab[i]];
+            s[0] += d[0];
+            s[1] += d[1];
+            s[2] += d[2];
+            cnt[lab[i]] += 1;
+        }
+        for j in 0..k {
+            if cnt[j] &gt; 0 {
+                let n = cnt[j] as f32;
+                cent[j] = [sum[j][0] / n, sum[j][1] / n, sum[j][2] / n];
+            }
+        }
+    }
+    cent.sort_by(|a, b| lum(*a).partial_cmp(&amp;lum(*b)).unwrap());
+    cent.dedup_by(|a, b| (a[0] - b[0]).abs() + (a[1] - b[1]).abs() + (a[2] - b[2]).abs() &lt; 3.0);
+    cent
+}</code></pre></figure>
+        <h3>The lookup table</h3>
+        <p>Every frame, each of the 41,000 cells needs "the nearest palette colour". Searching 16 colours for each one would be 650,000 distance calculations per frame. Instead, <code>Scene::new</code> rounds each colour channel to 5 bits (32 levels), which gives 32 × 32 × 32 = 32,768 possible colours, and works out the answer for each one in advance. Each answer is one byte (a palette index), so the table is 32 KB and fits in the CPU's fast cache.</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L852-L869">scene.rs · Scene::new: palette lookup table and dither strength</a><span>lines 852–869</span></figcaption><pre><code>let mut lut = vec![0u8; 32 * 32 * 32];
+for (i, e) in lut.iter_mut().enumerate() {
+    let c = [((i &gt;&gt; 10) &amp; 31) as f32 * 8.0 + 4.0, ((i &gt;&gt; 5) &amp; 31) as f32 * 8.0 + 4.0, (i &amp; 31) as f32 * 8.0 + 4.0];
+    let mut best = (f32::MAX, 0u8);
+    for (j, p) in pal_match.iter().enumerate() {
+        let d = (c[0] - p[0]).powi(2) + (c[1] - p[1]).powi(2) + (c[2] - p[2]).powi(2);
+        if d &lt; best.0 {
+            best = (d, j as u8);
+        }
+    }
+    *e = best.1;
+}
+let mut steps: Vec&lt;f32&gt; = pal_match
+    .windows(2)
+    .map(|w| (w[1][0] - w[0][0]).abs() + (w[1][1] - w[0][1]).abs() + (w[1][2] - w[0][2]).abs())
+    .collect();
+steps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+let dither_step = if steps.is_empty() { 32.0 } else { steps[steps.len() / 2] / 2.0 };</code></pre></figure>
+        <p>The index is built by shifting: red's 5 bits go in the top, then green, then blue (<code>r &lt;&lt; 10 | g &lt;&lt; 5 | b</code>). <code>dither_step</code> is the typical gap between neighbouring palette colours, which sets how strong the dither needs to be to hide the steps between them.</p>
+      </section>
+
+      <section id="random" aria-labelledby="random-h">
+        <p class="eyebrow">8</p>
+        <h2 id="random-h">Randomness without dice</h2>
+        <p>Nothing in a frame uses a random number generator. A generator has state: each call changes it. If four threads drawing four strips of the screen shared one, they would have to take turns, and the picture would depend on which thread got there first. Instead every "random" decision is a hash of where and when:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L197-L204">scene.rs · hash2</a><span>lines 197–204</span></figcaption><pre><code>pub fn hash2(x: i64, y: i64, seed: u32) -&gt; f32 {
+    let mut n = (x.wrapping_mul(374761393) as u64)
+        .wrapping_add(y.wrapping_mul(668265263) as u64)
+        .wrapping_add((seed as u64).wrapping_mul(2246822519))
+        &amp; 0xFFFF_FFFF;
+    n = ((n ^ (n &gt;&gt; 13)).wrapping_mul(1274126177)) &amp; 0xFFFF_FFFF;
+    ((n ^ (n &gt;&gt; 16)) &amp; 0xFFFF) as f32 / 65535.0
+}</code></pre></figure>
+        <p>The same (x, y, seed) always gives the same number between 0 and 1. A sparkle's position is <code>hash2(k, cycle, seed)</code>, where <i>k</i> is which sparkle and <i>cycle</i> counts how many times it has twinkled, so it jumps to a new place each time it fades out. The "wrapping" operations tell Rust that overflowing the integer is intended; normally it would be treated as a bug.</p>
+        <h3>Noise for clouds</h3>
+        <p>Hashing whole-number grid points and blending smoothly between them gives <i>value noise</i>: a soft, blobby random field. <code>wnoise</code> also wraps around every <code>period</code> cells in x, so clouds can drift sideways forever without a seam:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L209-L221">scene.rs · wnoise</a><span>lines 209–221</span></figcaption><pre><code>fn wnoise(x: f32, y: f32, seed: u32, period: i64) -&gt; f32 {
+    let (ix, iy) = (x.floor(), y.floor());
+    let (fx, fy) = (x - ix, y - iy);
+    let (fx, fy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+    let (ix, iy) = (ix as i64, iy as i64);
+    let x0 = ix.rem_euclid(period);
+    let x1 = (ix + 1).rem_euclid(period);
+    let a = hash2(x0, iy, seed);
+    let b = hash2(x1, iy, seed);
+    let c = hash2(x0, iy + 1, seed);
+    let d = hash2(x1, iy + 1, seed);
+    (a * (1.0 - fx) + b * fx) * (1.0 - fy) + (c * (1.0 - fx) + d * fx) * fy
+}</code></pre></figure>
+        <p>Real clouds have big shapes with smaller detail on top. <code>wfbm</code> ("fractal Brownian motion") stacks four layers of noise, each twice as fine and half as strong as the last:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L226-L235">scene.rs · wfbm</a><span>lines 226–235</span></figcaption><pre><code>fn wfbm(x: f32, y: f32, seed: u32, period: i64) -&gt; f32 {
+    let (mut v, mut a, mut f, mut tot) = (0.0, 0.5, 1.0f32, 0.0);
+    for o in 0..4 {
+        v += a * wnoise(x * f, y * f, seed + o * 31, period * f as i64);
+        tot += a;
+        a *= 0.5;
+        f *= 2.0;
+    }
+    v / tot
+}</code></pre></figure>
+        <p>There is one random generator in the program, used only while building a scene to place stars, dust motes and birds. It is seeded from the landscape and the monitor, so the same photo on the same screen always looks the same. It is an xorshift generator, which has the quirk that a state of zero stays zero forever, hence the <code>.max(1)</code>:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L916-L938">scene.rs · Scene::new: placing stars, motes and birds</a><span>lines 916–938</span></figcaption><pre><code><span class="c">// a small xorshift generator, seeded per scene, for placing things once</span>
+<span class="c">// (xorshift is stuck at 0 forever if it starts there, hence the max)</span>
+let mut rng = seed.wrapping_mul(2654435761).max(1);
+let mut rnd = move || {
+    rng ^= rng &lt;&lt; 13;
+    rng ^= rng &gt;&gt; 17;
+    rng ^= rng &lt;&lt; 5;
+    (rng as f32) / (u32::MAX as f32)
+};
+let mut stars = Vec::new();
+if night &amp;&amp; look.stars {
+    let n = (gw * gh) as f32 * 0.004;
+    for _ in 0..n as usize {
+        let (x, y) = ((rnd() * gw as f32) as usize % gw, (rnd() * gh as f32) as usize % gh);
+        if sky[y * gw + x] {
+            stars.push(Star { x, y, f: 1.0 + (rnd() * 3.0).floor(), ph: rnd() });
+        }
+    }
+}
+let motes = (0..look.motes)
+    .map(|_| Mote { x: rnd() * gw as f32, y: rnd() * gh as f32, f: 1.0 + (rnd() * 2.0).floor(), ph: rnd() })
+    .collect();
+let birds = (0..look.birds).map(|_| Bird { off: rnd() * 0.15, y: gh as f32 * (0.12 + rnd() * 0.2), ph: rnd() }).collect();</code></pre></figure>
+      </section>
+
+      <section id="frame" aria-labelledby="frame-h">
+        <p class="eyebrow">9</p>
+        <h2 id="frame-h">One frame</h2>
+        <p><code>Scene::render_damage(t, out, out_has_last)</code> draws the scene at time <i>t</i> seconds into the screen buffer <code>out</code>. The last argument says whether <code>out</code> still holds this scene's previous frame, which lets it redraw only what changed. It returns the list of changed rectangles, or <code>None</code> for "treat the whole frame as new". In order:</p>
+        <ol>
+          <li><b>GIF frame.</b> For an animated GIF, copy the frame for time <i>t</i> into the scene's starting grid.</li>
+          <li><b>Build the grid.</b> If nothing in the scene moves, reuse the cached grid and redraw only the sun glow's rectangle. Otherwise run <code>build_grid</code>: water, clouds, glow, glints, stars, logo, birds, motes, wind streaks, and then stylize.</li>
+          <li><b>Sparkles</b> on top of the grid. They come after the palette step so they stay crisp instead of being dithered.</li>
+          <li><b>To the screen.</b> Either scale the grid up with hard edges (<code>upscale</code>), or draw text cells (<code>ascii</code>) whose characters follow the brightness underneath.</li>
+          <li><b>Breakthroughs</b> on top: torn bands showing source code, a hex dump or a fake crash log.</li>
+        </ol>
+        <p>Colours are <code>[f32; 3]</code> (three floats from 0 to 255) while effects are being added, so blends don't lose precision, and packed into one <code>u32</code> as <code>0x00RRGGBB</code> for the screen. That packed layout is what both softbuffer (Windows) and Wayland's XRGB8888 format expect, so the finished buffer goes to the screen without conversion.</p>
+      </section>
+
+      <section id="animate" aria-labelledby="animate-h">
+        <p class="eyebrow">10</p>
+        <h2 id="animate-h">The moving parts</h2>
+        <p><code>build_grid</code> starts each frame from a fresh copy of the graded photo grid and adds the effects in order. The water is the simplest to read and shows the pattern most of them follow: work row by row, in parallel, with the effect computed from the row number and the time.</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L1233-L1249">scene.rs · build_grid: water</a><span>lines 1233–1249</span></figcaption><pre><code>if let Some(wf) = self.water_from {
+    let start = &amp;self.start;
+    let span = (gh - wf).max(1) as f32;
+    self.work[wf * gw..].par_chunks_mut(gw).enumerate().for_each(|(i, row)| {
+        let y = wf + i;
+        let depth = i as f32 / span;
+        let amp = (0.6 + depth * 6.0) * unit;
+        let sh = (amp * (tau * t * 0.25 + y as f32 * 0.9 / unit.max(0.3)).sin()
+            + 0.5 * amp * (-tau * t * 0.17 + y as f32 * 0.37 / unit.max(0.3)).sin())
+        .round() as i64;
+        let src = &amp;start[y * gw..(y + 1) * gw];
+        for (x, px) in row.iter_mut().enumerate() {
+            let sx = (x as i64 - sh).rem_euclid(gw as i64) as usize;
+            *px = src[sx];
+        }
+    });
+}</code></pre></figure>
+        <p><code>par_chunks_mut(gw)</code> splits the grid below the waterline into rows and hands them to the thread pool. Each row is shifted sideways by the sum of two sine waves moving at different speeds in opposite directions, so the pattern never visibly repeats. Deeper rows get a bigger amplitude. Pixels pushed off one edge come back on the other (<code>rem_euclid</code> is a remainder that is never negative), so no pixels have to be invented.</p>
+        <p>The other effects, briefly:</p>
+        <ul>
+          <li><b>Clouds</b> are computed on a coarser grid (at most 240 wide), because they are soft and a coarse grid looks the same. Noise is shifted by <code>drift</code> each frame, kept to a band above the horizon, and turned into cloud only where it is above a threshold set by the clouds slider. The result is blended onto sky cells only, by bilinear interpolation.</li>
+          <li><b>The sun glow</b> exists if the analysis found a clearly brighter spot in the sky. It blends the sky around that spot toward a warm white, with a strength that rises and falls on a six-second sine (<code>glow_k</code>).</li>
+          <li><b>Glints</b> on the water, <b>stars</b> at night and <b>motes</b> of dust were placed once by the seeded generator; each frame only computes their brightness from the time and their own phase.</li>
+          <li><b>Birds</b> are five cells in a V, drawn in the darkest palette colour. Each one loops across the sky about every 40 seconds (faster with more wind), bobs gently up and down, and flips between two wing poses twice a second.</li>
+          <li><b>The logo</b> (optional) is a coverage mask scaled onto the grid and blended toward cream, with an optional darker outline found by checking which cells touch the logo's edge.</li>
+          <li><b>Wind streaks</b> appear when the wind slider is past 0.4: short bright dashes racing across.</li>
+        </ul>
+      </section>
+
+      <section id="stylize" aria-labelledby="stylize-h">
+        <p class="eyebrow">11</p>
+        <h2 id="stylize-h">Stylize and scale up</h2>
+        <h3>Snapping to the palette with a dither</h3>
+        <p>Each grid cell is nudged by a value from a 4 × 4 Bayer matrix, rounded to 5 bits per channel, looked up in the table, and then blended toward that palette colour by the stylize amount:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L159-L161">scene.rs · bayer</a><span>lines 159–161</span></figcaption><pre><code>fn bayer(x: usize, y: usize) -&gt; f32 {
+    (BAYER4[y &amp; 3][x &amp; 3] + 0.5) / 16.0 - 0.5
+}</code></pre></figure>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L1884-L1892">scene.rs · stylize_px</a><span>lines 1884–1892</span></figcaption><pre><code>fn stylize_px(c: Rgb, x: usize, y: usize, s: f32, dstep: f32, pal: &amp;[Rgb], lut: &amp;[u8]) -&gt; u32 {
+    if s &lt;= 0.001 {
+        return pack(c);
+    }
+    let d = bayer(x, y) * dstep;
+    let q = |v: f32| (((v + d).clamp(0.0, 255.0)) as usize &gt;&gt; 3).min(31);
+    let p = pal[lut[(q(c[0]) &lt;&lt; 10) | (q(c[1]) &lt;&lt; 5) | q(c[2])] as usize];
+    pack(mix(c, p, s))
+}</code></pre></figure>
+        <p>The Bayer matrix orders the 16 thresholds so that neighbouring pixels get very different nudges. A smooth gradient that would have snapped to the same palette colour over a wide stripe instead flips back and forth in a fine regular pattern, and the eye averages it back into a gradient. <code>#[inline]</code> asks the compiler to paste these small functions into their callers, since they run tens of thousands of times a frame.</p>
+        <h3>Scaling up</h3>
+        <p>The last step makes the screen image from the grid. Each screen pixel takes the colour of the grid cell it falls in ("nearest neighbour"), which keeps the big pixels hard-edged.</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L1732-L1752">scene.rs · upscale</a><span>lines 1732–1752</span></figcaption><pre><code>fn upscale(&amp;self, out: &amp;mut [u32]) {
+    let (sw, sh, gw, gh) = (self.sw, self.sh, self.gw, self.gh);
+    let (grid, xmap) = (&amp;self.grid, &amp;self.xmap);
+    <span class="c">// bands of 16 rows; a row showing the same grid row as the one above is copied</span>
+    out.par_chunks_mut(sw * 16).enumerate().for_each(|(b, band)| {
+        let mut prev = usize::MAX;
+        for r in 0..band.len() / sw {
+            let y = b * 16 + r;
+            let gy = (y * gh / sh).min(gh - 1);
+            if gy == prev {
+                band.copy_within((r - 1) * sw..r * sw, r * sw);
+                continue;
+            }
+            prev = gy;
+            let src = &amp;grid[gy * gw..(gy + 1) * gw];
+            for (o, &amp;xi) in band[r * sw..(r + 1) * sw].iter_mut().zip(xmap.iter()) {
+                *o = src[xi];
+            }
+        }
+    });
+}</code></pre></figure>
+        <p>Two tricks keep this cheap. <code>xmap</code> is a list computed once per scene that says, for every screen column, which grid column it shows, so the inner loop is a table read rather than a division. And because a big pixel is several screen rows tall, most screen rows are identical to the one above: those are copied whole with <code>copy_within</code>, which compiles to a <code>memcpy</code>. The screen is split into bands of 16 rows, one band per task, so the four threads share the work.</p>
+        <h3>Text and breakthroughs</h3>
+        <p>The ASCII look divides the screen into square cells (16 × 16 pixels at 1080p, 32 × 32 at 4K), reads the grid colour at each cell's centre, picks a character from <code>" .:-=+*#%@"</code> by its brightness, and draws it in a brighter version of that colour on a dark version of it, using a built-in 8 × 8 bitmap font scaled up to the cell size. Glitches flip short runs of cells to random symbols for a ninth of a second.</p>
+        <p>Breakthroughs show text that the program carries inside itself. <code>include_str!</code> is evaluated by the compiler: it pastes the contents of those files into the binary as text. At run time the program splits them into lines once and keeps them:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L54-L64">scene.rs · code_lines</a><span>lines 54–64</span></figcaption><pre><code>fn code_lines() -&gt; &amp;&#x27;static [String] {
+    static LINES: std::sync::OnceLock&lt;Vec&lt;String&gt;&gt; = std::sync::OnceLock::new();
+    LINES.get_or_init(|| {
+        [include_str!(&quot;scene.rs&quot;), include_str!(&quot;player.rs&quot;), include_str!(&quot;saver.rs&quot;)]
+            .iter()
+            .flat_map(|s| s.lines())
+            .map(|l| l.replace(&#x27;\t&#x27;, &quot;    &quot;))
+            .filter(|l| !l.trim().is_empty())
+            .collect()
+    })
+}</code></pre></figure>
+        <p><code>OnceLock</code> makes that first-time setup safe even if two threads ask at once. The hex dump view reads the bytes of <code>scene.rs</code> the same way. The fake crash log invents its messages, but the file names and line numbers it prints are real positions in that embedded source.</p>
+      </section>
+
+      <section id="damage" aria-labelledby="damage-h">
+        <p class="eyebrow">12</p>
+        <h2 id="damage-h">Drawing less</h2>
+        <p>The cheapest frame is the one you don't draw. A scene is "still" when nothing on its grid can move:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/scene.rs#L1030-L1040">scene.rs · grid_is_still</a><span>lines 1030–1040</span></figcaption><pre><code>fn grid_is_still(&amp;self) -&gt; bool {
+    let streaks = ((self.look.wind.clamp(0.0, 1.0) - 0.4).max(0.0) * 14.0) as usize &gt; 0;
+    self.water_from.is_none()
+        &amp;&amp; self.look.clouds &lt;= 0.0
+        &amp;&amp; self.glints.is_empty()
+        &amp;&amp; self.stars.is_empty()
+        &amp;&amp; self.logo.is_none()
+        &amp;&amp; self.birds.is_empty()
+        &amp;&amp; self.motes.is_empty()
+        &amp;&amp; !streaks
+}</code></pre></figure>
+        <p>For a still scene, the finished grid is computed once and kept in <code>still_grid</code>. Each later frame copies it back and redraws only the sun glow's bounding box. If the ASCII look is on too, the whole text screen is cached as well (<code>still_screen</code>), and each frame only restores the rectangles it drew over last time (glitches and tears) before drawing this frame's.</p>
+        <p>Those rectangles are returned to the window code, which passes them on to the system compositor so it copies only those parts to the screen. On a 4K screen a full frame is 33 MB, so this matters. Two tests (<code>still_frames_match_full_render</code> and <code>partial_frames_match_full_render</code>) render the same scenes both ways, with and without the shortcuts, and require every pixel to match.</p>
+      </section>
+
+      <section id="player" aria-labelledby="player-h">
+        <p class="eyebrow">13</p>
+        <h2 id="player-h">The slideshow</h2>
+        <p>A <code>Player</code> holds the scene on screen (<code>cur</code>), the next one once it has loaded (<code>next</code>), and, while a load is running, the receiving end of a channel (<code>loading</code>) through which the loader thread will deliver it.</p>
+        <h3>The first picture</h3>
+        <p>When a player starts there is nothing to show yet, so the first scene is built right away, on the calling thread. If the first file is broken it tries the next, so one bad file doesn't leave a black screen. Then it starts loading the one after in the background:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/player.rs#L106-L117">player.rs · Player::new: the first scene</a><span>lines 106–117</span></figcaption><pre><code>if !p.list.is_empty() {
+    <span class="c">// start on the first image that loads, so one broken file doesn&#x27;t blank the screen</span>
+    for _ in 0..p.list.len() {
+        p.cur = p.build_sync(p.pos);
+        if p.cur.is_some() {
+            break;
+        }
+        p.pos = (p.pos + 1) % p.list.len();
+    }
+    p.request(p.pos + 1);
+}
+p</code></pre></figure>
+        <h3>Loading in the background</h3>
+        <p>Decoding a 4K JPEG and building its scene takes 50 to 300 ms, which is several frames. So every later scene is built on its own short-lived thread:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/player.rs#L157-L177">player.rs · request</a><span>lines 157–177</span></figcaption><pre><code>fn request(&amp;mut self, pos: usize) {
+    if self.list.len() &lt; 2 {
+        return;
+    }
+    self.next_pos = pos % self.order.len();
+    let l = self.landscape_at(pos);
+    let (tx, rx) = channel();
+    let (look, logo_cfg, logo, sw, sh, seed) = (
+        self.cfg.look_of(&amp;l).clone(),
+        self.cfg.logo_of(&amp;l).clone(),
+        self.logo_art_for(&amp;l),
+        self.sw,
+        self.sh,
+        self.seed.wrapping_add(pos as u32),
+    );
+    std::thread::spawn(move || {
+        let scene = load_source(&amp;l.path).ok().map(|src| Scene::new(&amp;src, logo.as_deref(), sw, sh, &amp;look, &amp;logo_cfg, seed));
+        let _ = tx.send(scene);
+    });
+    self.loading = Some(rx);
+}</code></pre></figure>
+        <p><code>move ||</code> means the thread takes ownership of everything it uses: its own copies of the settings, the screen size and the seed. It shares nothing with the player, so no locks are needed. A plain <code>std::thread</code> is used instead of the rayon pool so that one long decode can't hold up the pool that draws frames. If the user presses an arrow key and the player moves on, it simply drops its end of the channel; the thread finishes, its <code>send</code> fails quietly, and the result is thrown away.</p>
+        <p>Each frame, the player checks the channel without waiting (<code>try_recv</code>):</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/player.rs#L277-L297">player.rs · update_damage: collecting the loader&#x27;s result</a><span>lines 277–297</span></figcaption><pre><code>if let Some(rx) = &amp;self.loading {
+    match rx.try_recv() {
+        Ok(Some(scene)) =&gt; {
+            self.next = Some(scene);
+            self.loading = None;
+            self.failures = 0;
+            <span class="c">// the loader&#x27;s decode buffers were freed on its thread; give them back</span>
+            crate::trim_heap();
+        }
+        Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) =&gt; {
+            <span class="c">// that image didn&#x27;t load (deleted, corrupt, or the loader panicked):</span>
+            <span class="c">// skip it and try the one after, unless every image has failed</span>
+            self.loading = None;
+            self.failures += 1;
+            if self.failures &lt; self.order.len() {
+                self.request(self.next_pos + 1);
+            }
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) =&gt; {}
+    }
+}</code></pre></figure>
+        <p>A loader that panics drops its sender, which shows up here as <code>Disconnected</code> and is handled like a file that failed to load: skip to the next one. After a whole lap of failures it stops trying and keeps showing what it has. When every file fails from the start, the screen shows the error message instead of staying black.</p>
+        <h3>Transitions</h3>
+        <p>When the current landscape has been on for its display time and the next one is ready, a transition starts. During it, both scenes are rendered in full into two scratch buffers (<code>buf_a</code>, <code>buf_b</code>), and <code>blend</code> mixes them row by row in parallel: crossfade, dissolve (blocks chosen by <code>hash2</code>), a soft ragged wipe, slide, pixelate (blocks grow on the old picture, then shrink on the new) or fade through black. Both scenes keep animating underneath. Progress goes through a smoothstep curve so it eases in and out.</p>
+        <p>The scratch buffers are two whole screens (16 MB at 1080p), so they only exist while a transition runs:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/player.rs#L329-L343">player.rs · update_damage: the end of a transition</a><span>lines 329–343</span></figcaption><pre><code>if elapsed &gt;= len {
+    self.cur = self.next.take();
+    self.pos = self.next_pos;
+    self.transitions += 1;
+    self.shown = 0.0;
+    self.trans = None;
+    <span class="c">// give the two transition frames back to the system until the next one</span>
+    self.buf_a = Vec::new();
+    self.buf_b = Vec::new();
+    <span class="c">// the old scene and both frames are gone: return that memory now</span>
+    crate::trim_heap();
+    self.request(self.pos + 1);
+} else {
+    self.trans = Some((elapsed, kind));
+}</code></pre></figure>
+      </section>
+
+      <section id="windows" aria-labelledby="windows-h">
+        <p class="eyebrow">14</p>
+        <h2 id="windows-h">Windows and timing</h2>
+        <p><code>saver.rs</code> handles every mode that uses ordinary windows: the full-screen screensaver on every monitor, the Windows preview box, a plain window, the Windows wallpaper, and the single full-screen window that Omarchy starts per monitor. It uses two libraries: <b>winit</b> to open windows and receive keyboard and mouse events on every platform, and <b>softbuffer</b> to put a buffer of pixels into a window without any GPU API.</p>
+        <p>winit runs an event loop and calls <code>about_to_wait</code> whenever it has handled all pending events and is about to sleep. That is where nynex decides when the next frame is due:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/saver.rs#L485-L498">saver.rs · about_to_wait: frame timing</a><span>lines 485–498</span></figcaption><pre><code>let frame = Duration::from_secs_f32(1.0 / self.cfg.fps.clamp(5, 60) as f32);
+let now = Instant::now();
+if now &gt;= self.next_frame {
+    for w in &amp;self.wins {
+        if !w.covered {
+            w.window.request_redraw();
+        }
+    }
+    self.next_frame += frame;
+    if self.next_frame &lt; now {
+        self.next_frame = now + frame;
+    }
+}
+el.set_control_flow(ControlFlow::WaitUntil(self.next_frame));</code></pre></figure>
+        <p><code>ControlFlow::WaitUntil</code> tells the operating system to wake the program at that time, and it uses no CPU until then. If drawing fell behind (the machine was busy, or the laptop was asleep), the schedule restarts from now instead of rushing to draw every missed frame. Windows covered by a maximised window are skipped altogether.</p>
+        <p>The rest of the file handles input. Left and Right step through the landscapes; any other key, a click or a wheel turn closes the screensaver. Mouse movement only counts once the pointer has moved more than 24 pixels from where it was when the screensaver became "armed" a moment after starting, because windows moving into place and high-resolution mice report tiny moves that shouldn't wake you. For the preview box, the program also checks every frame that the parent window still exists, and quits when Windows closes the Settings dialog.</p>
+      </section>
+
+      <section id="wayland" aria-labelledby="wayland-h">
+        <p class="eyebrow">15</p>
+        <h2 id="wayland-h">The Wayland wallpaper</h2>
+        <p>On Linux, <code>--wallpaper</code> doesn't use winit. A wallpaper has to sit under all windows on every monitor, which ordinary windows can't ask for on Wayland. The <code>wlr-layer-shell</code> protocol, supported by Hyprland, Sway, niri and other wlroots-style compositors, lets a program place a surface on a layer of the desktop. <code>layer.rs</code> puts one on the "bottom" layer of each monitor, with no keyboard or mouse input, and follows monitors as they are plugged in and out.</p>
+        <p>Instead of a timer it uses the compositor's frame callbacks. After each frame, it asks the compositor "tell me when it's a good time to draw the next one". The compositor answers when the screen is about to refresh, and doesn't answer for a surface that can't be seen, for example behind a full-screen window. So the wallpaper stops drawing without any extra code:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/layer.rs#L334-L338">layer.rs · the compositor&#x27;s frame callback</a><span>lines 334–338</span></figcaption><pre><code>fn frame(&amp;mut self, _: &amp;Connection, _: &amp;QueueHandle&lt;Self&gt;, surface: &amp;wl_surface::WlSurface, _: u32) {
+    if let Some(o) = self.outputs.iter_mut().find(|o| o.layer.wl_surface() == surface) {
+        o.wants_frame = true;
+    }
+}</code></pre></figure>
+        <p>Frames are written into shared memory buffers (<code>wl_shm</code>) that the compositor reads directly. Up to three are kept, because the compositor may still be showing one while the next is being filled. A buffer that comes back from the compositor is several frames out of date, so the code keeps a short history of what changed in each recent frame, and copies into the reused buffer only the rectangles changed since it last held a frame. Then it tells the compositor which parts changed:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/layer.rs#L314-L326">layer.rs · draw: sending damage to the compositor</a><span>lines 314–326</span></figcaption><pre><code><span class="c">// tell the compositor only what changed since the previous frame</span>
+match &amp;damage {
+    Some(rects) =&gt; {
+        for &amp;(x, y, rw, rh) in rects {
+            surface.damage_buffer(x as i32, y as i32, rw as i32, rh as i32);
+        }
+    }
+    None =&gt; surface.damage_buffer(0, 0, w as i32, h as i32),
+}
+surface.frame(qh, surface.clone());
+if buffer.attach_to(surface).is_ok() {
+    o.wants_frame = false;
+    o.layer.commit();</code></pre></figure>
+        <p>The settings app stops a running wallpaper by creating a file called <code>wallpaper.stop</code> in the settings folder; the wallpaper checks for it twice a second, deletes it and exits. (On Linux it also exits on SIGTERM or when the compositor goes away.) That works the same on Windows and Linux and needs no process IDs or signals.</p>
+      </section>
+
+      <section id="os" aria-labelledby="os-h">
+        <p class="eyebrow">16</p>
+        <h2 id="os-h">Becoming the screensaver</h2>
+        <h3>Windows</h3>
+        <p>A Windows screensaver is a normal <code>.exe</code> with a <code>.scr</code> extension. Windows runs whatever path is stored in the registry value <code>HKCU\Control Panel\Desktop\SCRNSAVE.EXE</code>. When you click "Use as my screensaver", <code>install.rs</code> copies the running program to <code>%APPDATA%\nynex-screensaver\nynex.scr</code>, writes that value, and sets the timeout and "screensaver on" flag with the <code>SystemParametersInfoW</code> API, which also tells Windows the setting changed. No administrator rights are needed, because it is all under the current user.</p>
+        <p>The Windows wallpaper uses a long-known trick: sending the undocumented message <code>0x052C</code> to the desktop's <code>Progman</code> window makes Explorer create a separate window layer between the wallpaper and the icons. nynex finds that layer and makes its own windows children of it. Windows 11 24H2 reorganised these windows, and <code>wallpaper.rs</code> handles both layouts. When the wallpaper stops, it asks Windows to redraw the normal wallpaper so no frozen frame is left behind.</p>
+        <h3>Omarchy</h3>
+        <p>Omarchy's idle service runs a command named <code>omarchy-launch-screensaver</code>. The installer (in the separate omarchy-pixelbook-go repository) puts a script with that name in <code>/usr/local/bin</code>, which comes before <code>/usr/bin</code> on the PATH. That script starts <code>nynex --screensaver --app-id org.omarchy.screensaver</code> on every monitor. Using Omarchy's own app id means Omarchy's existing window rules (full screen, no animations) and its lock timer apply to nynex unchanged. If you turn nynex's screensaver off in settings, <code>omarchy.rs</code> writes a marker file and the script hands over to Omarchy's original screensaver instead.</p>
+      </section>
+
+      <section id="config" aria-labelledby="config-h">
+        <p class="eyebrow">17</p>
+        <h2 id="config-h">Settings on disk</h2>
+        <p>All settings live in one JSON file, read and written with the <code>serde</code> library, which generates the conversion code from the type definitions. Loading is defensive:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/config.rs#L231-L246">config.rs · Config::load_from</a><span>lines 231–246</span></figcaption><pre><code>pub fn load_from(path: &amp;Path) -&gt; Config {
+    let Ok(text) = std::fs::read_to_string(path) else { return Config::default() };
+    let mut cfg = match serde_json::from_str::&lt;Config&gt;(&amp;text) {
+        Ok(c) =&gt; c,
+        Err(e) =&gt; {
+            let bad = path.with_extension(&quot;json.bad&quot;);
+            if !bad.exists() {
+                let _ = std::fs::copy(path, &amp;bad);
+            }
+            eprintln!(&quot;{}: {e}; using the defaults (the file was kept as {})&quot;, path.display(), bad.display());
+            Config::default()
+        }
+    };
+    cfg.sanitize();
+    cfg
+}</code></pre></figure>
+        <p>A file that doesn't parse is copied aside to <code>config.json.bad</code> before the defaults are used, so pressing Save afterwards can't silently erase a landscape list that only had a typo in it. Then <code>sanitize</code> clamps every number to the range the sliders allow, with a little headroom, so a hand-edited file can't ask for a billion birds, a zero-length frame or a NaN (the <code>fin</code> helper replaces non-finite numbers with the default).</p>
+        <p>Saving writes a temporary file and renames it over the real one. On every common file system a rename is atomic, so a crash or power cut mid-save leaves either the old file or the new one, never half of each:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/config.rs#L272-L280">config.rs · Config::save</a><span>lines 272–280</span></figcaption><pre><code>pub fn save(&amp;self) -&gt; std::io::Result&lt;()&gt; {
+    let path = config_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension(&quot;json.tmp&quot;);
+    std::fs::write(&amp;tmp, serde_json::to_string_pretty(self).unwrap())?;
+    std::fs::rename(tmp, path)
+}</code></pre></figure>
+        <p>Photos you add are copied into a <code>landscapes</code> folder next to the config, so moving or deleting the originals doesn't break the slideshow. Stills over 3,840 pixels are stored as a downscaled JPEG, since nothing on screen needs more.</p>
+      </section>
+
+      <section id="memory" aria-labelledby="memory-h">
+        <p class="eyebrow">18</p>
+        <h2 id="memory-h">Memory</h2>
+        <p>Roughly what one 1080p screen holds:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>What</th><th>Size</th><th>When</th></tr></thead>
+          <tbody>
+            <tr><td>The buffer the window shows</td><td>8 MB</td><td>always (owned by softbuffer or the compositor)</td></tr>
+            <tr><td>Current scene: grid, tables, masks, caches</td><td>2 to 10 MB</td><td>always; a still ASCII scene also caches a full screen (8 MB)</td></tr>
+            <tr><td>Next scene, waiting</td><td>the same again</td><td>between loads and transitions</td></tr>
+            <tr><td>Transition frames</td><td>16 MB</td><td>only during a transition</td></tr>
+            <tr><td>Decoded photo</td><td>up to 20 MB</td><td>only while the loader builds a scene</td></tr>
+          </tbody>
+        </table></div>
+        <p>On Linux, freed memory doesn't automatically go back to the system: glibc keeps it for reuse. After a landscape change and after each transition, the player calls <code>trim_heap</code>, which asks glibc to release whatever it is holding but not using:</p>
+        <figure class="src"><figcaption><a href="https://github.com/kingof9x/nynex-screensaver/blob/main/src/main.rs#L40-L46">main.rs · trim_heap</a><span>lines 40–46</span></figcaption><pre><code>pub fn trim_heap() {
+    #[cfg(all(target_os = &quot;linux&quot;, target_env = &quot;gnu&quot;))]
+    <span class="c">// SAFETY: malloc_trim only releases free pages; it is thread safe.</span>
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}</code></pre></figure>
+        <p>With that, the two-arena limit from startup, and the transition buffers that only exist during transitions, the memory the Linux wallpaper holds most of the time went from about 130 MB to about 75 MB. The measurements and the method are in <a href="https://github.com/kingof9x/nynex-screensaver/blob/main/docs/BENCHMARKS.md">BENCHMARKS.md</a>.</p>
+      </section>
+
+      <section id="safety" aria-labelledby="safety-h">
+        <p class="eyebrow">19</p>
+        <h2 id="safety-h">Unsafe code</h2>
+        <p>Rust checks memory safety at compile time, except inside blocks marked <code>unsafe</code>, where the programmer takes responsibility. nynex has 20 such blocks, and every one is a call into an operating-system API that Rust can't check:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>File</th><th>Blocks</th><th>What they call</th></tr></thead>
+          <tbody>
+            <tr><td><code>install.rs</code></td><td>6</td><td>The Windows registry, short file names, and <code>SystemParametersInfoW</code> (screensaver on/off and timeout)</td></tr>
+            <tr><td><code>wallpaper.rs</code></td><td>6</td><td>Finding the desktop windows, the <code>0x052C</code> message, re-parenting, restoring the wallpaper</td></tr>
+            <tr><td><code>saver.rs</code></td><td>5</td><td>Cursor position, the foreground window's size, and the preview box's parent window (its size, whether it still exists, and opening a child window inside it)</td></tr>
+            <tr><td><code>main.rs</code></td><td>2</td><td>glibc's <code>mallopt</code> and <code>malloc_trim</code></td></tr>
+            <tr><td><code>layer.rs</code></td><td>1</td><td><code>poll</code>: waiting on the Wayland connection with a timeout, so the stop file is still checked while no frames are wanted</td></tr>
+          </tbody>
+        </table></div>
+        <p>The renderer, the slideshow and the settings code contain none. Each block has a <code>// SAFETY:</code> comment saying why the call is sound, which is the convention reviewers look for.</p>
+      </section>
+
+      <section id="tests" aria-labelledby="tests-h">
+        <p class="eyebrow">20</p>
+        <h2 id="tests-h">Tests</h2>
+        <pre class="plain"><code>cargo test                                      <span class="c"># unit tests and quick stress tests</span>
+cargo test --release -- --ignored --nocapture   <span class="c"># the long stress tests and the benchmark</span></code></pre>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Test</th><th>Checks</th></tr></thead>
+          <tbody>
+            <tr><td><code>still_frames_match_full_render</code>, <code>partial_frames_match_full_render</code></td><td>The caching and damage shortcuts draw exactly the same pixels as a full redraw.</td></tr>
+            <tr><td><code>odd_sizes_and_random_settings_never_panic</code></td><td>Screens from 1 × 1 to 1920 × 1080, including 15 × 600 and 600 × 15, with random settings; every pixel is written.</td></tr>
+            <tr><td><code>every_transition_at_odd_sizes</code></td><td>All seven transitions at odd sizes.</td></tr>
+            <tr><td><code>broken_images_are_skipped</code>, <code>nothing_loads</code></td><td>Empty, truncated and fake image files are skipped; with nothing loadable, a message is shown instead of a crash or a blank screen.</td></tr>
+            <tr><td><code>stepping_back_and_forth</code></td><td>Arrow keys pressed during transitions and loads.</td></tr>
+            <tr><td><code>bad_config_is_kept_and_values_are_clamped</code></td><td>A corrupt config is kept aside; absurd values are clamped.</td></tr>
+            <tr><td><code>stress_long_run</code> (long)</td><td>Ten minutes of slideshow with one-second landscapes; memory must not keep growing.</td></tr>
+            <tr><td><code>stress_big_gif</code> (long)</td><td>A 600-frame 1280 × 720 GIF keeps its timing and stays under 200 MB.</td></tr>
+            <tr><td><code>stress_fuzz</code> (long)</td><td>300 random scenes, screen sizes and settings.</td></tr>
+          </tbody>
+        </table></div>
+        <div class="note"><b>Where to start reading.</b> Open <code>src/scene.rs</code>: its first 30 lines are a table of where each step lives. Then <code>Scene::render_damage</code>, which calls everything else in order. For a reviewer's checklist (what the program touches, hostile inputs, known limitations), see <a href="https://github.com/kingof9x/nynex-screensaver/blob/main/docs/REVIEW.md">REVIEW.md</a>.</div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<div class="wrap">
+  <footer>
+    <span>nynex screensaver · by kingof9x</span>
+    <span><a href="index.html">The nynex page</a> · <a href="https://github.com/kingof9x/nynex-screensaver">Source on GitHub</a></span>
+  </footer>
+</div>
+</body>
+</html>

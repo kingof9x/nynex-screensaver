@@ -13,7 +13,8 @@ landscapes with the transition you pick, and can show a centred logo.
 | ![The original photo](docs/screenshots/photo-original.jpg) | ![The same photo, stylized](docs/screenshots/hero.png) |
 
 **More:** [project website](https://kingof9x.github.io/nynex-screensaver/) ·
-[how it works, for non-developers (slides)](https://kingof9x.github.io/nynex-screensaver/presentation.html) ·
+[how it works, for non-developers](https://kingof9x.github.io/nynex-screensaver/#inside) ·
+[the code in detail](https://kingof9x.github.io/nynex-screensaver/code.html) ·
 [architecture](docs/ARCHITECTURE.md) · [benchmarks](docs/BENCHMARKS.md) · [review guide](docs/REVIEW.md)
 
 nynex is a single program of about 5,000 lines of Rust. It draws every frame on the CPU and
@@ -114,8 +115,9 @@ palette with a dither pattern, and scales the grid up to the screen with hard ed
 landscape is prepared on a background thread while the current one plays.
 
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) walks through the code file by file, and the source is
-commented throughout. For a gentler tour, there are [slides](https://kingof9x.github.io/nynex-screensaver/presentation.html)
-written for power users who don't program.
+commented throughout. The website has [a page on the code](https://kingof9x.github.io/nynex-screensaver/code.html)
+that quotes and explains the important parts, and the main page has a
+[gentler tour](https://kingof9x.github.io/nynex-screensaver/#inside) written for power users who don't program.
 
 ## Build
 
