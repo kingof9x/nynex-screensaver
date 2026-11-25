@@ -15,6 +15,12 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  # A newer push to the same PR cancels its older, now pointless build.
+  # Runs on main (pushes and releases) are never cancelled.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   version:
     # Works out the release version: from the Run workflow box ("next" = last release + 1)
@@ -61,7 +67,18 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Faster settings for test builds (no version = not a release)
+        if: needs.version.outputs.version == ''
+        shell: bash
+        run: |
+          # Real releases keep the full release profile (LTO, few codegen units).
+          # Test builds (PRs, pushes to main) skip LTO and use more codegen units:
+          # same optimisation level, much shorter compile.
+          echo "CARGO_PROFILE_RELEASE_LTO=false" >> "$GITHUB_ENV"
+          echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build
         run: cargo build --release --locked
@@ -96,33 +113,28 @@ jobs:
             dist/nynex.exe
             dist/README.md
 
-      - name: Publish release
-        if: needs.version.outputs.version != ''
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.version.outputs.tag }}
-        run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" nynex-screensaver-windows-x64.zip dist/nynex.exe --clobber
-          else
-            gh release create "$TAG" \
-              nynex-screensaver-windows-x64.zip dist/nynex.exe \
-              --target "$GITHUB_SHA" \
-              --title "nynex screensaver ${TAG#v}" \
-              --generate-notes
-          fi
 
   linux:
-    # Linux / Omarchy build. Runs after the Windows job so the release already exists.
-    needs: [version, build]
+    # Linux / Omarchy build. Runs at the same time as the Windows build.
+    needs: version
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Faster settings for test builds (no version = not a release)
+        if: needs.version.outputs.version == ''
+        shell: bash
+        run: |
+          # Real releases keep the full release profile (LTO, few codegen units).
+          # Test builds (PRs, pushes to main) skip LTO and use more codegen units:
+          # same optimisation level, much shorter compile.
+          echo "CARGO_PROFILE_RELEASE_LTO=false" >> "$GITHUB_ENV"
+          echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build
         run: cargo build --release --locked
@@ -154,12 +166,29 @@ jobs:
             nynex-linux-x86_64
             nynex-screensaver-linux-x86_64.tar.gz
 
-      - name: Publish release
-        if: needs.version.outputs.version != ''
+
+  release:
+    # Publishes both builds once they're done (only when a version was given).
+    needs: [version, build, linux]
+    if: needs.version.outputs.version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+      - name: Create or update the release
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
           TAG: ${{ needs.version.outputs.tag }}
-        run: gh release upload "$TAG" nynex-linux-x86_64 nynex-screensaver-linux-x86_64.tar.gz --clobber
+        run: |
+          (cd out/nynex-screensaver-windows-x64 && zip -q "$GITHUB_WORKSPACE/nynex-screensaver-windows-x64.zip" nynex.exe README.md)
+          files="nynex-screensaver-windows-x64.zip out/nynex-screensaver-windows-x64/nynex.exe out/nynex-screensaver-linux-x86_64/nynex-linux-x86_64 out/nynex-screensaver-linux-x86_64/nynex-screensaver-linux-x86_64.tar.gz"
+          if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" $files -R "$REPO" --clobber
+          else
+            gh release create "$TAG" $files -R "$REPO" --target "$GITHUB_SHA" --title "nynex screensaver ${TAG#v}" --generate-notes
+          fi
 
   build-passed:
     # One check that sums up the whole build. The repo's "Require passing build" rule
