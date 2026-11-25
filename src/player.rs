@@ -17,16 +17,26 @@ pub struct Player {
     cur: Option<Scene>,
     next: Option<Scene>,
     loading: Option<Receiver<Option<Scene>>>,
+    /// Position in `order` of the scene in `next` (or the one being loaded).
+    next_pos: usize,
+    /// Images in a row that failed to load in the background; after a whole lap of failures
+    /// the player stops trying and keeps showing what it has.
+    failures: usize,
     shown: f32,
     trans: Option<(f32, TransitionKind)>,
     clock: f32,
     logo: Option<Arc<LogoArt>>,
+    /// Scratch frames for the two scenes of a transition. Only allocated while a transition
+    /// runs (they are two whole screens: 16 MB at 1080p) and freed again when it ends.
     buf_a: Vec<u32>,
     buf_b: Vec<u32>,
     seed: u32,
     error: Option<String>,
     /// The last frame handed out was drawn by `cur` alone (no transition, no message).
     cur_drew_last: bool,
+    /// Transitions completed so far (for tests and the stress runs).
+    #[cfg_attr(not(test), allow(dead_code))]
+    transitions: usize,
 }
 
 fn shuffled(n: usize, seed: u32) -> Vec<usize> {
@@ -54,18 +64,28 @@ impl Player {
             cur: None,
             next: None,
             loading: None,
+            next_pos: 0,
+            failures: 0,
             shown: 0.0,
             trans: None,
             clock: 0.0,
             logo,
-            buf_a: vec![0; sw * sh],
-            buf_b: vec![0; sw * sh],
+            buf_a: Vec::new(),
+            buf_b: Vec::new(),
             seed,
             error: None,
             cur_drew_last: false,
+            transitions: 0,
         };
         if !p.list.is_empty() {
-            p.cur = p.build_sync(p.pos);
+            // start on the first image that loads, so one broken file doesn't blank the screen
+            for _ in 0..p.list.len() {
+                p.cur = p.build_sync(p.pos);
+                if p.cur.is_some() {
+                    break;
+                }
+                p.pos = (p.pos + 1) % p.list.len();
+            }
             p.request(p.pos + 1);
         }
         p
@@ -105,6 +125,7 @@ impl Player {
         if self.list.len() < 2 {
             return;
         }
+        self.next_pos = pos % self.order.len();
         let l = self.landscape_at(pos);
         let (tx, rx) = channel();
         let (look, logo_cfg, logo, sw, sh, seed) = (
@@ -147,8 +168,10 @@ impl Player {
             self.trans = None;
             if let Some(next) = self.next.take() {
                 self.cur = Some(next);
-                self.pos = (self.pos + 1) % n;
+                self.pos = self.next_pos;
             }
+            self.buf_a = Vec::new();
+            self.buf_b = Vec::new();
             self.shown = 0.0;
             self.cur_drew_last = false;
             self.request(self.pos + 1);
@@ -157,7 +180,7 @@ impl Player {
             }
         }
         let target = (self.pos as isize + d).rem_euclid(n as isize) as usize;
-        if d > 0 && self.next.is_none() {
+        if d > 0 && self.next.is_none() && self.next_pos == target {
             if let Some(rx) = &self.loading {
                 // wait for the background load rather than loading the same image twice
                 if let Ok(scene) = rx.recv() {
@@ -166,7 +189,7 @@ impl Player {
             }
         }
         let scene = match self.next.take() {
-            Some(s) if d > 0 && n > 1 => Some(s),
+            Some(s) if d > 0 && n > 1 && self.next_pos == target => Some(s),
             _ => self.build_sync(target),
         };
         self.pos = target;
@@ -175,7 +198,19 @@ impl Player {
         self.next = None;
         self.loading = None;
         self.cur_drew_last = false;
+        crate::trim_heap();
         self.request(target + 1);
+    }
+
+    /// Position in the play order of the landscape on screen.
+    #[cfg(test)]
+    pub fn position(&self) -> usize {
+        self.order[self.pos]
+    }
+
+    #[cfg(test)]
+    pub fn transitions(&self) -> usize {
+        self.transitions
     }
 
     /// Skip to the next landscape with a transition (settings preview button).
@@ -207,9 +242,24 @@ impl Player {
         }
 
         if let Some(rx) = &self.loading {
-            if let Ok(scene) = rx.try_recv() {
-                self.next = scene;
-                self.loading = None;
+            match rx.try_recv() {
+                Ok(Some(scene)) => {
+                    self.next = Some(scene);
+                    self.loading = None;
+                    self.failures = 0;
+                    // the loader's decode buffers were freed on its thread; give them back
+                    crate::trim_heap();
+                }
+                Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // that image didn't load (deleted, corrupt, or the loader panicked):
+                    // skip it and try the one after, unless every image has failed
+                    self.loading = None;
+                    self.failures += 1;
+                    if self.failures < self.order.len() {
+                        self.request(self.next_pos + 1);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
 
@@ -234,15 +284,26 @@ impl Player {
             Some((elapsed, kind)) => {
                 let len = self.cfg.transition_secs.max(0.05);
                 let p = (elapsed / len).clamp(0.0, 1.0);
+                let n = self.sw * self.sh;
+                if self.buf_a.len() != n {
+                    self.buf_a = vec![0; n];
+                    self.buf_b = vec![0; n];
+                }
                 self.cur.as_mut().unwrap().render(t, &mut self.buf_a);
                 self.next.as_mut().unwrap().render(t, &mut self.buf_b);
                 blend(kind, ease(p), &self.buf_a, &self.buf_b, out, self.sw, self.sh, self.seed);
                 let elapsed = elapsed + dt;
                 if elapsed >= len {
                     self.cur = self.next.take();
-                    self.pos = (self.pos + 1) % self.order.len();
+                    self.pos = self.next_pos;
+                    self.transitions += 1;
                     self.shown = 0.0;
                     self.trans = None;
+                    // give the two transition frames back to the system until the next one
+                    self.buf_a = Vec::new();
+                    self.buf_b = Vec::new();
+                    // the old scene and both frames are gone: return that memory now
+                    crate::trim_heap();
                     self.request(self.pos + 1);
                 } else {
                     self.trans = Some((elapsed, kind));

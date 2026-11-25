@@ -51,6 +51,10 @@ struct Win {
     covered: bool,
     /// Frames since the whole window was last sent; a full frame goes out now and then anyway.
     partial_frames: u32,
+    /// When the window last changed size. Building a scene means decoding and analysing the
+    /// image, so while a window is being dragged bigger or smaller it is only painted dark,
+    /// and the scene is built once the size has stayed put for a moment.
+    resized_at: Option<Instant>,
 }
 
 struct App {
@@ -81,6 +85,9 @@ fn arrow_step(key: &winit::keyboard::Key) -> Option<isize> {
 /// Pixels the mouse has to travel before the screensaver closes.
 const MOVE_TO_QUIT: f64 = 24.0;
 
+/// How long a window's size has to stay the same before its scene is rebuilt.
+const RESIZE_SETTLE: Duration = Duration::from_millis(200);
+
 pub fn run(mode: Mode) {
     let cfg = Config::load();
     let event_loop = EventLoop::new().expect("event loop");
@@ -103,7 +110,7 @@ impl App {
         let (w, h) = (sz.width.max(1), sz.height.max(1));
         let seed = 0x5eed_u32.wrapping_add(index as u32 * 7919).wrapping_add(self.started.elapsed().subsec_nanos());
         let screen = (0, 0, 0, 0);
-        self.wins.push(Win { window, surface, player: None, index, seed, size: (w, h), last: Instant::now(), first_cursor: None, screen, covered: false, partial_frames: 0 });
+        self.wins.push(Win { window, surface, player: None, index, seed, size: (w, h), last: Instant::now(), first_cursor: None, screen, covered: false, partial_frames: 0, resized_at: None });
     }
 
     fn quit_on_input(&self) -> bool {
@@ -342,6 +349,7 @@ impl ApplicationHandler for App {
                     if (nw, nh) != w.size {
                         w.size = (nw, nh);
                         w.player = None;
+                        w.resized_at = Some(Instant::now());
                         w.window.request_redraw();
                     }
                 }
@@ -362,6 +370,11 @@ impl ApplicationHandler for App {
                             buf.fill(0);
                             let _ = buf.present();
                         }
+                        if w.resized_at.is_some_and(|t| t.elapsed() < RESIZE_SETTLE) {
+                            // still being resized: wait (about_to_wait keeps asking for frames)
+                            return;
+                        }
+                        w.resized_at = None;
                         let offset = if self.cfg.different_per_monitor { w.index } else { 0 };
                         w.player = Some(Player::new(self.cfg.clone(), ww as usize, hh as usize, offset, w.seed));
                         w.last = Instant::now();

@@ -193,22 +193,52 @@ pub struct Source {
     pub frames: Vec<(RgbImage, f32)>,
 }
 
-/// Most frames kept from an animated GIF (memory stays modest even for long loops).
+/// Most frames kept from an animated GIF.
 const MAX_GIF_FRAMES: usize = 300;
+/// Most bytes of decoded GIF frames held while loading. 300 frames at 1280x720 would be
+/// 830 MB; past this budget every other frame is dropped (its time is merged into the frame
+/// before it), so a long, big GIF plays at a lower frame rate instead of eating memory.
+const GIF_BYTES_BUDGET: usize = 192 * 1024 * 1024;
 
 fn load_gif_frames(path: &Path) -> Vec<(RgbImage, f32)> {
     use image::AnimationDecoder;
     let Ok(file) = std::fs::File::open(path) else { return Vec::new() };
     let Ok(dec) = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(file)) else { return Vec::new() };
-    let mut out = Vec::new();
-    for f in dec.into_frames().take(MAX_GIF_FRAMES) {
+    let mut out: Vec<(RgbImage, f32)> = Vec::new();
+    let mut bytes = 0usize;
+    // keep every `stride`-th frame; doubles each time the budget is hit
+    let mut stride = 1usize;
+    for (n_frame, f) in dec.into_frames().take(MAX_GIF_FRAMES * 8).enumerate() {
         let Ok(f) = f else { break };
         let (n, d) = f.delay().numer_denom_ms();
         // browsers treat very short delays as 0.1 s; do the same
         let secs = if d == 0 || n as f32 / d as f32 <= 10.0 { 0.1 } else { n as f32 / d as f32 / 1000.0 };
+        if n_frame % stride != 0 {
+            // dropped frame: the kept frame before it stays up for its time too
+            if let Some(last) = out.last_mut() {
+                last.1 += secs;
+            }
+            continue;
+        }
         let img = image::DynamicImage::ImageRgba8(f.into_buffer());
         let img = if img.width() > 1280 || img.height() > 1280 { img.resize(1280, 1280, FilterType::Triangle) } else { img };
-        out.push((img.to_rgb8(), secs));
+        let rgb = img.to_rgb8();
+        bytes += rgb.as_raw().len();
+        out.push((rgb, secs));
+        if bytes > GIF_BYTES_BUDGET || out.len() > MAX_GIF_FRAMES {
+            // halve what we hold: merge each odd frame's time into the even frame before it
+            let mut kept: Vec<(RgbImage, f32)> = Vec::with_capacity(out.len() / 2 + 1);
+            for (i, fr) in out.into_iter().enumerate() {
+                if i % 2 == 0 {
+                    kept.push(fr);
+                } else if let Some(last) = kept.last_mut() {
+                    last.1 += fr.1;
+                }
+            }
+            out = kept;
+            bytes = out.iter().map(|f| f.0.as_raw().len()).sum();
+            stride *= 2;
+        }
     }
     if out.len() < 2 {
         out.clear();
@@ -499,8 +529,8 @@ fn find_water_line(px: &[Rgb], w: usize, h: usize) -> Option<usize> {
     let corr = |pairs: &mut dyn Iterator<Item = (usize, usize)>| -> f32 {
         let (mut sab, mut saa, mut sbb) = (0.0f64, 0.0f64, 0.0f64);
         for (a, b) in pairs {
-            for x in 0..w {
-                let (p, q) = (rows[a][x] as f64, rows[b][x] as f64);
+            for (&p, &q) in rows[a].iter().zip(rows[b].iter()) {
+                let (p, q) = (p as f64, q as f64);
                 sab += p * q;
                 saa += p * p;
                 sbb += q * q;
@@ -603,7 +633,8 @@ impl Scene {
         let sh = sh.max(8);
         let aspect = sw as f32 / sh as f32;
         let px = pixel_size(look.pixelation) * sh as f32 / 1080.0;
-        let gw = ((sw as f32 / px.max(1.0)).round() as usize).clamp(16, sw.min(2560));
+        // (16.min(sw): a window can be resized narrower than 16 px, and clamp panics if min > max)
+        let gw = ((sw as f32 / px.max(1.0)).round() as usize).clamp(16.min(sw), sw.min(2560));
         let gh = ((gw as f32 / aspect).round() as usize).max(9);
         let cropped = crop_to_aspect(&src.img, aspect);
 
@@ -1182,10 +1213,9 @@ impl Scene {
                         }
                     }
                 }
-                for i in 0..gw * gh {
-                    if rim[i] {
-                        let c = self.work[i];
-                        self.work[i] = [c[0] * 0.62, c[1] * 0.62, c[2] * 0.62];
+                for (c, &on) in self.work.iter_mut().zip(rim.iter()) {
+                    if on {
+                        *c = [c[0] * 0.62, c[1] * 0.62, c[2] * 0.62];
                     }
                 }
             }
@@ -1707,6 +1737,9 @@ fn stylize_px(c: Rgb, x: usize, y: usize, s: f32, dstep: f32, pal: &[Rgb], lut: 
 }
 
 // ------------------------------------------------------------------ text (for messages)
+/// Draw `text` centred on (cx, cy) with the built-in 8x8 font, each font pixel `scale`
+/// screen pixels wide. Used for the "Add landscapes..." and error messages.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_text(out: &mut [u32], sw: usize, sh: usize, text: &str, cx: usize, cy: usize, scale: usize, color: u32) {
     let w = text.len() * 8 * scale;
     let x0 = cx.saturating_sub(w / 2);
