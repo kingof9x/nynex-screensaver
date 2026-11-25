@@ -12,15 +12,22 @@ Live 1080p slideshow, five landscapes (three 3840 px Yosemite photos, two 1920 p
 | | Python prototype | nynex 0.9.2 | nynex, this version |
 |---|---|---|---|
 | Frames per second | 18 (as fast as it can) | 30 (as configured) | 30 (as configured) |
-| CPU time per frame | 55 ms | {{V092_CPU_MS}} ms | {{NEW_CPU_MS}} ms |
-| Share of one CPU core | 100% | {{V092_CPU_PCT}}% | {{NEW_CPU_PCT}}% |
-| Memory after start (RSS) | 88 MB | {{V092_RSS_START}} MB | {{NEW_RSS_START}} MB |
-| Memory over 10 minutes (RSS, min to max) | 88 to 126 MB | {{V092_RSS_RANGE}} MB | {{NEW_RSS_RANGE}} MB |
-| Memory at the end (RSS) | 126 MB | {{V092_RSS_END}} MB | {{NEW_RSS_END}} MB |
-| Peak memory (high-water mark) | 260 MB | {{V092_HWM}} MB | {{NEW_HWM}} MB |
-| Private memory at the end | not measured | {{V092_PRIV}} MB | {{NEW_PRIV}} MB |
+| CPU time per frame | 55 ms | 12.6 ms | 12.2 ms |
+| Share of one CPU core | 100% | 38% | 37% |
+| Memory after start (RSS) | 88 MB | 103 MB | 69 MB |
+| Memory over the run (RSS, min to max) | 88 to 126 MB (1-minute run) | 103 to 217 MB | 64 to 196 MB |
+| Memory most of the time (RSS, median) | not measured | 132 MB | 76 MB |
+| Memory at the end (RSS) | 126 MB | 132 MB | 77 MB |
+| Peak memory (high-water mark) | 260 MB | 232 MB | 218 MB |
+| Private memory at the end | not measured | 113 MB | 58 MB |
 | Needs installed | Python 3, NumPy, Pillow | nothing | nothing |
 | Size on disk | 36 KB script + ~60 MB of libraries | 12 MB | 12 MB |
+
+In short: the memory nynex holds most of the time went from about 130 MB to about 75 MB (private
+memory from 113 to 58 MB). Peak memory barely moved: both versions briefly reached 200 MB or more
+while decoding the 3840 px photos, and in both runs RSS stayed high for about two minutes in the
+middle of the run before dropping back. That spike is not yet explained; it is the next thing to
+look at if memory matters more.
 
 What changed between 0.9.2 and this version, for memory:
 
@@ -31,7 +38,7 @@ What changed between 0.9.2 and this version, for memory:
 
 CPU per frame did not change in this review; the renderer itself was already tuned in 0.8.4 and
 0.9.1. The Python prototype cannot reach 30 fps at 1080p at all, so its "share of a core" is 100%
-at 18 fps; per frame, nynex needs about {{SPEEDUP}} times less CPU.
+at 18 fps; per frame, nynex needs about 4.5 times less CPU.
 
 ## What the numbers mean
 
