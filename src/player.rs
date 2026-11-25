@@ -1,5 +1,18 @@
 //! Slideshow: shows each landscape for its display time, loads the next one in the
 //! background, and blends between them with the chosen transition.
+//!
+//! One `Player` runs per screen. The window code (`saver.rs`, `layer.rs`) or the settings
+//! preview calls `update_damage` once per frame with a pixel buffer; everything else
+//! (timing, loading, transitions, error messages) happens in here.
+//!
+//! Loading is the slow part (decoding a 4K JPEG and building its `Scene` takes 50 to 300 ms),
+//! so the *next* landscape is always prepared on its own short-lived thread while the current
+//! one plays, and handed back over a channel. A frame never waits for a decode, except when
+//! the user presses an arrow key before the next landscape is ready.
+//!
+//! Memory, per screen of `w` x `h` pixels: the current scene and the next one (each roughly
+//! the grid plus a few small tables, a few MB), plus two extra full screens only while a
+//! transition runs. The decoded photos themselves are dropped as soon as their scene is built.
 
 use crate::config::{Config, Landscape, TransitionKind};
 use crate::scene::{draw_text, hash2, load_logo, load_source, LogoArt, Rect, Scene};
@@ -9,28 +22,40 @@ use std::sync::Arc;
 
 pub struct Player {
     pub cfg: Config,
+    /// Screen size this player draws for.
     pub sw: usize,
     pub sh: usize,
+    /// The enabled landscapes.
     list: Vec<Landscape>,
+    /// Play order: indexes into `list`, shuffled or in order.
     order: Vec<usize>,
+    /// Position in `order` of the landscape on screen.
     pos: usize,
+    /// The scene on screen, and the one that comes next once it has loaded.
     cur: Option<Scene>,
     next: Option<Scene>,
+    /// The loader thread's answer, while one is working: Some(scene), or None if the file
+    /// could not be read. If the thread dies, the channel disconnects, which counts as None.
     loading: Option<Receiver<Option<Scene>>>,
     /// Position in `order` of the scene in `next` (or the one being loaded).
     next_pos: usize,
     /// Images in a row that failed to load in the background; after a whole lap of failures
     /// the player stops trying and keeps showing what it has.
     failures: usize,
+    /// Seconds the current landscape has been on screen.
     shown: f32,
+    /// A running transition: seconds into it, and which kind.
     trans: Option<(f32, TransitionKind)>,
+    /// Seconds since the player started; the animation time handed to scenes.
     clock: f32,
+    /// The shared logo picture, loaded once.
     logo: Option<Arc<LogoArt>>,
     /// Scratch frames for the two scenes of a transition. Only allocated while a transition
     /// runs (they are two whole screens: 16 MB at 1080p) and freed again when it ends.
     buf_a: Vec<u32>,
     buf_b: Vec<u32>,
     seed: u32,
+    /// Why the last landscape failed to load, shown on screen when nothing else can be.
     error: Option<String>,
     /// The last frame handed out was drawn by `cur` alone (no transition, no message).
     cur_drew_last: bool,
@@ -39,6 +64,7 @@ pub struct Player {
     transitions: usize,
 }
 
+/// 0..n in a random order (Fisher-Yates shuffle, driven by `hash2` so it needs no RNG).
 fn shuffled(n: usize, seed: u32) -> Vec<usize> {
     let mut v: Vec<usize> = (0..n).collect();
     for i in (1..n).rev() {
@@ -107,6 +133,8 @@ impl Player {
         lc.path.as_deref().and_then(load_logo)
     }
 
+    /// Load and build the landscape at `pos` right now, on this thread. Only used when there
+    /// is nothing to show yet (start-up, arrow keys, the settings preview).
     fn build_sync(&mut self, pos: usize) -> Option<Scene> {
         let l = self.landscape_at(pos);
         let art = self.logo_art_for(&l);
@@ -121,6 +149,11 @@ impl Player {
     }
 
     /// Load the landscape at `pos` on a background thread.
+    ///
+    /// A plain `std::thread` rather than the rayon pool: decoding is one long blocking job,
+    /// and on the rayon pool it would hold up the per-frame parallel work. The thread owns
+    /// copies of everything it needs, so it never touches the player. If the player moves on
+    /// before it finishes (`jump_to`, `step`), its result is simply dropped.
     fn request(&mut self, pos: usize) {
         if self.list.len() < 2 {
             return;
@@ -330,6 +363,8 @@ fn lerp_px(a: u32, b: u32, t: f32) -> u32 {
 }
 
 /// Combine two finished frames for transition progress `p` (0 = all `a`, 1 = all `b`).
+/// Both scenes keep animating underneath: each transition frame renders both of them in
+/// full, then mixes them here, one screen row per task.
 #[allow(clippy::too_many_arguments)]
 pub fn blend(kind: TransitionKind, p: f32, a: &[u32], b: &[u32], out: &mut [u32], sw: usize, sh: usize, seed: u32) {
     let block = (sh / 90).max(4);

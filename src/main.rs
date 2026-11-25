@@ -152,6 +152,8 @@ fn render_cli(args: &[String]) {
         }
         i += 2;
     }
+    // a scene is at least 8x8 (see Scene::new), and 16384 is far past any real screen
+    let (w, h) = (w.clamp(8, 16384), h.clamp(8, 16384));
     let src = match scene::load_source(std::path::Path::new(input)) {
         Ok(s) => s,
         Err(e) => {

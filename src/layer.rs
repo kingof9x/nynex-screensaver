@@ -141,6 +141,7 @@ pub fn run_wallpaper() -> Result<(), String> {
         if let Some(guard) = queue.prepare_read() {
             let timeout = next_frame.saturating_duration_since(Instant::now()).min(Duration::from_millis(500));
             let mut fds = [libc::pollfd { fd: guard.connection_fd().as_raw_fd(), events: libc::POLLIN, revents: 0 }];
+            // SAFETY: one valid pollfd in a local array, and we pass its length (1).
             let n = unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout.as_millis() as i32) };
             if n > 0 {
                 if let Err(e) = guard.read() {

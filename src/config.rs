@@ -91,7 +91,8 @@ pub struct Look {
     pub breakthrough: f32,
 }
 
-/// `v` limited to `lo..=hi`, or `default` when it isn't a finite number.
+/// `v` limited to `lo..=hi`, or `default` when it isn't a finite number (NaN or infinity,
+/// which `clamp` would pass straight through).
 fn fin(v: f32, lo: f32, hi: f32, default: f32) -> f32 {
     if v.is_finite() { v.clamp(lo, hi) } else { default }
 }
@@ -201,6 +202,9 @@ fn yes() -> bool {
     true
 }
 
+/// The app's own folder: `%APPDATA%\nynex-screensaver` on Windows,
+/// `~/.config/nynex-screensaver` on Linux. Holds the config, the landscape library, the
+/// crash log and the wallpaper's stop file.
 pub fn app_dir() -> PathBuf {
     dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("nynex-screensaver")
 }
@@ -262,6 +266,9 @@ impl Config {
         }
     }
 
+    /// Write the config. It goes to `config.json.tmp` first and is then renamed over the real
+    /// file, so a crash or power cut mid-write leaves either the old file or the new one, never
+    /// half of each. (A running screensaver or wallpaper reads it only when it starts.)
     pub fn save(&self) -> std::io::Result<()> {
         let path = config_path();
         if let Some(dir) = path.parent() {
@@ -335,10 +342,19 @@ pub fn import_image(src: &Path) -> std::io::Result<PathBuf> {
 /// Longest side kept when importing an image.
 pub const MAX_IMPORT_SIDE: u32 = 3840;
 
-/// Decode an image without the decoder's default memory limits (very large photos).
+/// Most memory one decode may use. The `image` crate's default (512 MB) refuses some real
+/// photos (a 100-megapixel 16-bit PNG needs about 800 MB); no limit at all would let a broken
+/// or hostile file that claims to be 100000x100000 pixels abort the whole program when the
+/// allocation fails. 2 GB is a middle ground.
+const MAX_DECODE_BYTES: u64 = 2 << 30;
+
+/// Decode an image with a larger memory limit than the decoder's default (very large photos).
+/// The name is historical: there is still a limit, `MAX_DECODE_BYTES`.
 pub fn decode_unlimited(path: &Path) -> Option<image::DynamicImage> {
     let mut r = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
-    r.no_limits();
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_DECODE_BYTES);
+    r.limits(limits);
     r.decode().ok()
 }
 

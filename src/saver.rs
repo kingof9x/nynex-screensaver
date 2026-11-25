@@ -1,5 +1,19 @@
 //! The screensaver itself: one borderless fullscreen window per monitor (or a child window
 //! inside the Screen Saver Settings preview box), drawn with a CPU framebuffer.
+//!
+//! How it runs: `winit` owns the event loop and the windows; `softbuffer` hands us each
+//! window's pixels as a plain `&mut [u32]` that the `Player` draws into, and presents it
+//! (on Windows through GDI, on Wayland through a shared-memory buffer, on X11 through XShm).
+//! There is no GPU code at all, which keeps the program small and makes it work the same in
+//! a VM, over remote desktop, or on a machine with broken graphics drivers.
+//!
+//! Frame pacing: `about_to_wait` runs whenever the event loop is idle. It asks every window
+//! to redraw once per frame period (1/fps) and then sleeps until the next one
+//! (`ControlFlow::WaitUntil`), so between frames the program uses no CPU. A frame that
+//! runs late does not cause a burst of catch-up frames; the schedule just restarts from now.
+//!
+//! Each frame only the rectangles that changed are presented (`present_with_damage`), and a
+//! full frame is sent every so often anyway in case the compositor lost something.
 
 use crate::config::Config;
 use crate::player::Player;
@@ -136,6 +150,7 @@ fn cursor_pos() -> Option<(i32, i32)> {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
     let mut p = POINT { x: 0, y: 0 };
+    // SAFETY: writes one POINT into a local.
     (unsafe { GetCursorPos(&mut p) } != 0).then_some((p.x, p.y))
 }
 
@@ -145,6 +160,8 @@ fn cursor_pos() -> Option<(i32, i32)> {
 fn covered_by_foreground(r: (i32, i32, i32, i32)) -> bool {
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    // SAFETY: read-only queries about the foreground window; every out-parameter is a local
+    // buffer whose length is passed.
     unsafe {
         let fg = GetForegroundWindow();
         if fg.is_null() || IsIconic(fg) != 0 || IsWindowVisible(fg) == 0 {
@@ -194,6 +211,7 @@ fn parent_size(hwnd: isize) -> (u32, u32) {
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
     let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    // SAFETY: a stale or invalid handle just makes the call fail and leaves `r` zeroed.
     unsafe { GetClientRect(hwnd as _, &mut r) };
     (((r.right - r.left).max(1)) as u32, ((r.bottom - r.top).max(1)) as u32)
 }
@@ -201,6 +219,7 @@ fn parent_size(hwnd: isize) -> (u32, u32) {
 #[cfg(windows)]
 fn parent_alive(hwnd: isize) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
+    // SAFETY: IsWindow is designed to be called with handles that may no longer exist.
     unsafe { IsWindow(hwnd as _) != 0 }
 }
 
@@ -291,6 +310,8 @@ impl ApplicationHandler for App {
                     use winit::raw_window_handle::{RawWindowHandle, Win32WindowHandle};
                     if let Some(nz) = std::num::NonZeroIsize::new(hwnd) {
                         let handle = RawWindowHandle::Win32(Win32WindowHandle::new(nz));
+                        // SAFETY: the handle comes from Windows on the command line (/p) and is
+                        // checked with IsWindow every frame; if it dies we exit.
                         attrs = unsafe { attrs.with_parent_window(Some(handle)) };
                     }
                 }
@@ -419,6 +440,9 @@ impl ApplicationHandler for App {
         }
     }
 
+    /// Called each time the event loop has handled everything pending. Does the periodic
+    /// checks (wallpaper stop file, covered screens, preview parent gone, mouse moved) and
+    /// schedules the next frame.
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         if matches!(self.mode, Mode::Wallpaper) && self.last_stop_check.elapsed() > Duration::from_millis(500) {
             self.last_stop_check = Instant::now();
