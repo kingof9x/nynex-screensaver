@@ -6,6 +6,27 @@ scenes, in the spirit of the Claude FM stream visuals. Clouds drift, lakes rippl
 breathes, stars twinkle at night, birds glide past and motes float up. It cycles through your
 landscapes with the transition you pick, and can show a centred logo.
 
+![A Yosemite river scene in nynex's stylized look: cream sky, clay-coloured cliffs, rippling reflection](docs/screenshots/demo.gif)
+
+| Your photo | What nynex makes of it |
+|---|---|
+| ![The original photo](docs/screenshots/photo-original.jpg) | ![The same photo, stylized](docs/screenshots/hero.png) |
+
+**More:** [project website](https://kingof9x.github.io/nynex-screensaver/) ·
+[how it works, for non-developers (slides)](https://kingof9x.github.io/nynex-screensaver/presentation.html) ·
+[architecture](docs/ARCHITECTURE.md) · [benchmarks](docs/BENCHMARKS.md) · [review guide](docs/REVIEW.md)
+
+nynex is a single program of about 5,000 lines of Rust. It draws every frame on the CPU and
+needs no graphics card, game engine or runtime. At 1080p the Linux wallpaper uses about 3 to 6% of
+one CPU core, and 35 to 60 MB of memory (see [benchmarks](docs/BENCHMARKS.md)).
+
+## Looks
+
+| | |
+|---|---|
+| ![Full colour pixel art](docs/screenshots/look-full-colour.png) **Full colour**: the photo's own colours, pixelated. | ![Very chunky pixels](docs/screenshots/look-chunky.png) **Chunky**: pixelation turned all the way up. |
+| ![ASCII text art](docs/screenshots/look-ascii.png) **ASCII**: every cell drawn as a coloured character. | ![Code breaking through the picture](docs/screenshots/look-breakthrough.png) **Code breaking through**: the picture tears open to show nynex's own source, a hex dump or a crash log. |
+
 ## Install
 
 1. Download `nynex.exe` from the latest [release](../../releases) and open it. This is the nynex
@@ -26,7 +47,11 @@ apply right away; after downloading a new version, click the button again to upd
 
 If something crashes, the details are written to `%APPDATA%\nynex-screensaver\crash.log`.
 
+![The settings app: the landscape list on the left, a live preview in the middle, sliders on the right](docs/screenshots/settings-app.png)
+
 ## Linux and Omarchy
+
+![nynex as a live wallpaper behind a terminal on a Wayland desktop](docs/screenshots/wallpaper-wayland.png)
 
 The same `nynex` program runs on Linux. On Omarchy (Arch + Hyprland) the easiest way in is the
 installer in [omarchy-pixelbook-go](https://github.com/kingof9x/omarchy-pixelbook-go/tree/main/nynex),
@@ -81,26 +106,26 @@ nynex.exe --render photo.jpg frame.png --seconds 5   # write one frame to a PNG
 
 ## How it works
 
-Each photo is cropped to the screen's shape and shrunk to the pixel grid set by the pixelation
-slider. It is then analysed once:
+Each photo is cropped to the screen's shape and shrunk to a grid of big pixels. It is analysed once
+(where the sky is, whether there is a lake reflection, whether it is night, which 16 colours
+represent it best). Then every frame adds the moving parts on the grid, snaps the colours to the
+palette with a dither pattern, and scales the grid up to the screen with hard edges. The next
+landscape is prepared on a background thread while the current one plays.
 
-- **Sky:** a flood fill of smooth, gradually changing colour from the top edge, with clouds and the
-  sun filled back in.
-- **Water:** a check for whether the lower part of the picture mirrors the upper part, which marks a
-  lake reflection.
-- **Night:** whether the sky is dark.
-- **Palette:** a small k-means palette taken from the warm-graded picture.
-
-Every frame adds the moving parts on the grid. It then snaps colours toward the dithered palette by
-the stylize amount, scales up with hard edges, and optionally draws ASCII cells on top. Rendering
-runs on the CPU and is spread over all cores with rayon. Each monitor gets a borderless window
-drawn with softbuffer. The settings app uses egui.
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) walks through the code file by file, and the source is
+commented throughout. For a gentler tour, there are [slides](https://kingof9x.github.io/nynex-screensaver/presentation.html)
+written for power users who don't program.
 
 ## Build
 
 ```
 cargo build --release          # target/release/nynex.exe (or target/release/nynex on Linux)
+cargo test                     # unit and stress tests (a few minutes in a debug build)
+cargo test --release -- --ignored --nocapture   # long stress tests and the render benchmark
 ```
+
+No system libraries are needed to build. At run time on Linux the program loads the Wayland or X11
+client libraries and `libxkbcommon` that every desktop already has.
 
 Cross-compiling from Linux works with `rustup target add x86_64-pc-windows-gnu` and MinGW
 (`cargo build --release --target x86_64-pc-windows-gnu`).

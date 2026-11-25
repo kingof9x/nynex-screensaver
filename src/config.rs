@@ -326,7 +326,7 @@ pub fn import_image(src: &Path) -> std::io::Result<PathBuf> {
             if img.width().max(img.height()) > MAX_IMPORT_SIDE {
                 let small = img.resize(MAX_IMPORT_SIDE, MAX_IMPORT_SIDE, image::imageops::FilterType::Lanczos3);
                 let dst = unique("jpg");
-                let rgb = image::DynamicImage::ImageRgb8(small.to_rgb8());
+                let rgb = image::DynamicImage::ImageRgb8(small.into_rgb8());
                 let file = std::fs::File::create(&dst)?;
                 let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(std::io::BufWriter::new(file), 92);
                 enc.encode_image(&rgb).map_err(std::io::Error::other)?;

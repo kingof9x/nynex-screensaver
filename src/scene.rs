@@ -314,7 +314,9 @@ pub fn load_source(path: &Path) -> Result<Arc<Source>, String> {
     } else {
         img
     };
-    Ok(Arc::new(Source { img: img.to_rgb8(), frames: Vec::new() }))
+    // into_rgb8 hands over the pixels without a copy when they are already 8-bit RGB (the
+    // usual case for JPEGs); to_rgb8 would briefly hold a second 20 to 45 MB copy
+    Ok(Arc::new(Source { img: img.into_rgb8(), frames: Vec::new() }))
 }
 
 /// Logo artwork as coverage 0..1 (transparent PNGs use alpha; opaque art uses darkness).
@@ -344,7 +346,9 @@ pub fn load_logo(path: &Path) -> Option<Arc<LogoArt>> {
 // ------------------------------------------------------------------ analysis helpers
 /// Cut the middle out of the photo so it has the screen's shape (like "fill" for a desktop
 /// background): nothing is stretched, the edges that don't fit are dropped.
-fn crop_to_aspect(img: &RgbImage, aspect: f32) -> RgbImage {
+/// Returns a view into `img`, not a copy: a 2560 px photo is 20 MB, and the view is only read
+/// by the two resizes that follow.
+fn crop_to_aspect(img: &RgbImage, aspect: f32) -> image::SubImage<&RgbImage> {
     let (w, h) = (img.width(), img.height());
     let (cw, ch) = if w as f32 / h as f32 > aspect {
         (((h as f32) * aspect).round() as u32, h)
@@ -352,7 +356,7 @@ fn crop_to_aspect(img: &RgbImage, aspect: f32) -> RgbImage {
         (w, ((w as f32) / aspect).round() as u32)
     };
     let (x0, y0) = ((w - cw.min(w)) / 2, (h - ch.min(h)) / 2);
-    image::imageops::crop_imm(img, x0, y0, cw.min(w).max(1), ch.min(h).max(1)).to_image()
+    image::imageops::crop_imm(img, x0, y0, cw.min(w).max(1), ch.min(h).max(1))
 }
 
 /// Bytes to float colours, which the grading maths works in.
@@ -763,7 +767,7 @@ impl Scene {
         // analysis at a fixed small size
         let aw = 320usize;
         let ah = ((aw as f32 / aspect).round() as usize).max(8);
-        let small = image::imageops::resize(&cropped, aw as u32, ah as u32, FilterType::Triangle);
+        let small = image::imageops::resize(&*cropped, aw as u32, ah as u32, FilterType::Triangle);
         let small_v = to_vec(&small);
         let sky_a = find_sky(&small_v, aw, ah);
         let water_a = if look.water { find_water_line(&small_v, aw, ah) } else { None };
@@ -799,7 +803,7 @@ impl Scene {
             .collect();
 
         // grid
-        let grid_img = image::imageops::resize(&cropped, gw as u32, gh as u32, FilterType::Triangle);
+        let grid_img = image::imageops::resize(&*cropped, gw as u32, gh as u32, FilterType::Triangle);
         let photo = to_vec(&grid_img);
         let s = look.stylize.clamp(0.0, 1.0);
         let start: Vec<Rgb> = photo.iter().map(|&c| mix(c, grade(c), s)).collect();
@@ -814,7 +818,7 @@ impl Scene {
         for chunk in src.frames.chunks(step) {
             let (img, _) = &chunk[0];
             let secs: f32 = chunk.iter().map(|f| f.1).sum();
-            let g = image::imageops::resize(&crop_to_aspect(img, aspect), gw as u32, gh as u32, FilterType::Triangle);
+            let g = image::imageops::resize(&*crop_to_aspect(img, aspect), gw as u32, gh as u32, FilterType::Triangle);
             let cells = g
                 .pixels()
                 .map(|p| {
