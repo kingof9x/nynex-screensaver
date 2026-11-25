@@ -78,6 +78,7 @@ pre.term {
 pre.term .p { color: #d97757; } pre.term .c { color: #8f8478; }
 .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: 1.4rem; align-items: start; }
 .cols > * { min-width: 0; display: grid; gap: 0.7rem; align-content: start; }
+img, canvas { height: auto; }
 .pic { border: 4px solid var(--ink); border-radius: 4px; image-rendering: pixelated; max-width: 100%; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #000; }
 canvas.pic { display: block; height: auto; }
 .analogy { border-left: 4px solid var(--sage); padding: 0.3rem 0 0.3rem 0.9rem; color: var(--ink); max-width: 62ch; }
@@ -249,7 +250,7 @@ diff &lt;(head -n $y photo) &lt;(tail -n +$y photo | tac)</pre>
       </div>
       <p class="small">Same palette, same number of colours. Untick "Dither" to see the stripes come back.</p>
     </div>
-    <canvas class="pic" id="ditherCanvas" width="480" height="270" aria-label="A sunset gradient drawn with a few colours, with or without dithering"></canvas>
+    <canvas class="pic" id="ditherCanvas" width="320" height="180" aria-label="A sunset gradient drawn with a few colours, with or without dithering"></canvas>
   </div>
 </section>
 

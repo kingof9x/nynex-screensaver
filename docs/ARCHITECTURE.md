@@ -157,7 +157,7 @@ on Linux.
 | `nynex.exe` | Windows wallpaper / start with Windows | Likewise. |
 | `crash.log` | any | Panics, with time and message. |
 | `wallpaper.log` | Linux wallpaper | What it attached to, and errors. |
-| `wallpaper.stop` | settings app | A running Windows wallpaper exits when this appears. |
+| `wallpaper.stop` | settings app | A running wallpaper (Windows or Linux) exits when this appears, and deletes it. |
 | `omarchy-screensaver-off` | settings app | Tells the Omarchy hook to run Omarchy's own screensaver. |
 
 ## Platform glue
