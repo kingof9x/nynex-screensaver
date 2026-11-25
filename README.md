@@ -17,8 +17,9 @@ landscapes with the transition you pick, and can show a centred logo.
 [architecture](docs/ARCHITECTURE.md) · [benchmarks](docs/BENCHMARKS.md) · [review guide](docs/REVIEW.md)
 
 nynex is a single program of about 5,000 lines of Rust. It draws every frame on the CPU and
-needs no graphics card, game engine or runtime. At 1080p the Linux wallpaper uses about 3 to 6% of
-one CPU core, and 35 to 60 MB of memory (see [benchmarks](docs/BENCHMARKS.md)).
+needs no graphics card, game engine or runtime. At 1080p the Linux wallpaper needs about 12 ms of CPU
+per frame (4.5 times less than the Python prototype) and holds about 75 MB of memory most of the
+time (see [benchmarks](docs/BENCHMARKS.md)).
 
 ## Looks
 
